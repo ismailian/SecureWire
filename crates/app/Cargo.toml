@@ -17,3 +17,7 @@ eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
 regex-lite.workspace = true
+sw-term.workspace = true
+secrecy.workspace = true
+directories.workspace = true
+parking_lot.workspace = true

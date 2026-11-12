@@ -88,10 +88,24 @@ impl Section {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    Hello { proto: u32, shell: String },
-    Data { section: Section, seq: u64, payload: String },
-    Same { section: Section, seq: u64 },
-    Err { section: Section, seq: u64, code: String },
+    Hello {
+        proto: u32,
+        shell: String,
+    },
+    Data {
+        section: Section,
+        seq: u64,
+        payload: String,
+    },
+    Same {
+        section: Section,
+        seq: u64,
+    },
+    Err {
+        section: Section,
+        seq: u64,
+        code: String,
+    },
     Pong(u64),
 }
 
@@ -161,14 +175,22 @@ impl FrameDecoder {
                     self.dropped += 1;
                 }
                 if let Some((section, seq)) = section_seq(&mut it) {
-                    self.open = Some(Open { section, seq, payload: String::new() });
+                    self.open = Some(Open {
+                        section,
+                        seq,
+                        payload: String::new(),
+                    });
                 } else {
                     self.dropped += 1;
                 }
             }
             "END" => match (self.open.take(), section_seq(&mut it)) {
                 (Some(o), Some((section, seq))) if o.section == section && o.seq == seq => {
-                    out.push(Frame::Data { section, seq, payload: o.payload });
+                    out.push(Frame::Data {
+                        section,
+                        seq,
+                        payload: o.payload,
+                    });
                 }
                 (Some(_), _) | (None, Some(_)) => self.dropped += 1,
                 (None, None) => {}
@@ -208,7 +230,11 @@ fn section_seq<'a>(it: &mut impl Iterator<Item = &'a str>) -> Option<(Section, u
 /// Encode a data frame exactly like the collector does. Used by the demo source and tests.
 pub fn encode(section: Section, seq: u64, payload: &str) -> Vec<u8> {
     let rs = RS as char;
-    format!("{rs}SW1 {n} {seq}\n{payload}\n{rs}END {n} {seq}\n", n = section.name()).into_bytes()
+    format!(
+        "{rs}SW1 {n} {seq}\n{payload}\n{rs}END {n} {seq}\n",
+        n = section.name()
+    )
+    .into_bytes()
 }
 
 #[cfg(test)]
@@ -231,7 +257,11 @@ mod tests {
         assert_eq!(dropped, 0);
         assert_eq!(
             f,
-            vec![Frame::Data { section: Section::Cpu, seq: 7, payload: "cpu 1 2 3\ncpu0 1 2 3".into() }]
+            vec![Frame::Data {
+                section: Section::Cpu,
+                seq: 7,
+                payload: "cpu 1 2 3\ncpu0 1 2 3".into()
+            }]
         );
     }
 
@@ -244,16 +274,36 @@ mod tests {
         let (f, dropped) = decode_all(&chunks);
         assert_eq!(dropped, 0);
         assert_eq!(f.len(), 4);
-        assert_eq!(f[0], Frame::Hello { proto: 1, shell: "5.2.21".into() });
-        assert_eq!(f[2], Frame::Same { section: Section::Df, seq: 2 });
+        assert_eq!(
+            f[0],
+            Frame::Hello {
+                proto: 1,
+                shell: "5.2.21".into()
+            }
+        );
+        assert_eq!(
+            f[2],
+            Frame::Same {
+                section: Section::Df,
+                seq: 2
+            }
+        );
         assert_eq!(f[3], Frame::Pong(9));
     }
 
     #[test]
     fn interrupted_frame_is_dropped() {
-        let (f, dropped) = decode_all(&[b"\x1eSW1 cpu 1\npartial\n", &encode(Section::Cpu, 2, "ok")]);
+        let (f, dropped) =
+            decode_all(&[b"\x1eSW1 cpu 1\npartial\n", &encode(Section::Cpu, 2, "ok")]);
         assert_eq!(dropped, 1);
-        assert_eq!(f, vec![Frame::Data { section: Section::Cpu, seq: 2, payload: "ok".into() }]);
+        assert_eq!(
+            f,
+            vec![Frame::Data {
+                section: Section::Cpu,
+                seq: 2,
+                payload: "ok".into()
+            }]
+        );
     }
 
     #[test]
@@ -266,7 +316,14 @@ mod tests {
     #[test]
     fn noise_outside_frames_is_ignored_and_crlf_ok() {
         let (f, _) = decode_all(&[b"Welcome!\r\n\x1eERR fw 3 missing\r\n\x1eBOGUS x\n"]);
-        assert_eq!(f, vec![Frame::Err { section: Section::Fw, seq: 3, code: "missing".into() }]);
+        assert_eq!(
+            f,
+            vec![Frame::Err {
+                section: Section::Fw,
+                seq: 3,
+                code: "missing".into()
+            }]
+        );
     }
 
     #[test]

@@ -1,0 +1,294 @@
+//! In-process SSH server for tests and `examples/dev_sshd.rs`.
+//!
+//! A fake shell with a handful of commands — enough to exercise connect,
+//! host keys, auth, PTY sizing, input echo, exit status and dropped
+//! connections without a real Linux box. Keys are generated fresh per process
+//! into a temp dir (no private keys live in the repo); credentials below are test-only.
+
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use russh::keys::PublicKey;
+use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
+use russh::{Channel, ChannelId};
+
+pub const USER: &str = "tester";
+pub const PASSWORD: &str = "securewire-test";
+pub const PASSPHRASE: &str = "test-passphrase";
+
+/// Path of a generated test key: `test_host_ed25519`, `test_client_ed25519`,
+/// `test_client_ed25519_enc` (passphrase [`PASSPHRASE`]), each with a `.pub`.
+pub fn fixture(name: &str) -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(generate_keys).join(name)
+}
+
+fn generate_keys() -> PathBuf {
+    use russh::keys::ssh_key::{Algorithm, LineEnding, PrivateKey};
+    // dev_sshd sets SW_TEST_KEY_DIR to a stable dir so its host key survives restarts.
+    let dir = std::env::var_os("SW_TEST_KEY_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("securewire-test-keys-{}", std::process::id()))
+        });
+    std::fs::create_dir_all(&dir).expect("key dir");
+    if dir.join("test_client_ed25519_enc.pub").exists() {
+        return dir;
+    }
+    let mut rng = rand::rng();
+    let write = |name: &str, key: &PrivateKey| {
+        std::fs::write(
+            dir.join(name),
+            key.to_openssh(LineEnding::LF).expect("encode").as_bytes(),
+        )
+        .expect("write key");
+        std::fs::write(
+            dir.join(format!("{name}.pub")),
+            key.public_key().to_openssh().expect("encode pub"),
+        )
+        .expect("write pub");
+    };
+    for name in ["test_host_ed25519", "test_client_ed25519"] {
+        write(
+            name,
+            &PrivateKey::random(&mut rng, Algorithm::Ed25519).expect("keygen"),
+        );
+    }
+    let enc = PrivateKey::random(&mut rng, Algorithm::Ed25519).expect("keygen");
+    let enc_pub = enc.public_key().clone();
+    let enc = enc.encrypt(&mut rng, PASSPHRASE).expect("encrypt");
+    std::fs::write(
+        dir.join("test_client_ed25519_enc"),
+        enc.to_openssh(LineEnding::LF).expect("encode").as_bytes(),
+    )
+    .expect("write key");
+    std::fs::write(
+        dir.join("test_client_ed25519_enc.pub"),
+        enc_pub.to_openssh().expect("encode pub"),
+    )
+    .expect("write pub");
+    dir
+}
+
+#[derive(Default)]
+pub struct Observed {
+    /// (cols, rows) from pty-req and window-change, in order.
+    pub sizes: Vec<(u32, u32)>,
+    pub sessions: usize,
+}
+
+pub struct TestServer {
+    pub port: u16,
+    pub observed: Arc<Mutex<Observed>>,
+    pub host_key: PublicKey,
+}
+
+pub fn start() -> TestServer {
+    start_with_host_key(&fixture("test_host_ed25519"))
+}
+
+pub fn start_with_host_key(path: &Path) -> TestServer {
+    start_on(0, path)
+}
+
+/// Listen on 127.0.0.1:`port` (0 = any free port).
+pub fn start_on(port: u16, path: &Path) -> TestServer {
+    let host = russh::keys::load_secret_key(path, None).expect("host key");
+    let host_pub = host.public_key().clone();
+    let client_keys: Vec<PublicKey> = ["test_client_ed25519.pub", "test_client_ed25519_enc.pub"]
+        .iter()
+        .map(|f| russh::keys::load_public_key(fixture(f)).expect("client pub"))
+        .collect();
+    let observed = Arc::new(Mutex::new(Observed::default()));
+    let obs = observed.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let config = Arc::new(server::Config {
+                keys: vec![host],
+                auth_rejection_time: std::time::Duration::from_millis(10),
+                auth_rejection_time_initial: Some(std::time::Duration::ZERO),
+                ..Default::default()
+            });
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .unwrap();
+            tx.send(listener.local_addr().unwrap().port()).unwrap();
+            loop {
+                let Ok((sock, _)) = listener.accept().await else {
+                    break;
+                };
+                obs.lock().unwrap().sessions += 1;
+                let h = Shell {
+                    client_keys: client_keys.clone(),
+                    obs: obs.clone(),
+                    lines: HashMap::new(),
+                };
+                let cfg = config.clone();
+                tokio::spawn(async move {
+                    if let Ok(s) = server::run_stream(cfg, sock, h).await {
+                        let _ = s.await;
+                    }
+                });
+            }
+        });
+    });
+    TestServer {
+        port: rx.recv().unwrap(),
+        observed,
+        host_key: host_pub,
+    }
+}
+
+struct Shell {
+    client_keys: Vec<PublicKey>,
+    obs: Arc<Mutex<Observed>>,
+    lines: HashMap<ChannelId, String>,
+}
+
+const PROMPT: &[u8] = b"\x1b[32mtester@sw-test\x1b[0m:~$ ";
+
+impl server::Handler for Shell {
+    type Error = russh::Error;
+
+    async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        Ok(if user == USER && password == PASSWORD {
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(
+            if user == USER
+                && self
+                    .client_keys
+                    .iter()
+                    .any(|k| k.key_data() == key.public_key.key_data())
+            {
+                Auth::Accept
+            } else {
+                Auth::reject()
+            },
+        )
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        _channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        _channel: ChannelId,
+        _term: &str,
+        cols: u32,
+        rows: u32,
+        _pw: u32,
+        _ph: u32,
+        _modes: &[(russh::Pty, u32)],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.obs.lock().unwrap().sizes.push((cols, rows));
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        cols: u32,
+        rows: u32,
+        _pw: u32,
+        _ph: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.obs.lock().unwrap().sizes.push((cols, rows));
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.lines.insert(channel, String::new());
+        session.data(
+            channel,
+            b"Welcome to the SecureWire test server\r\n".to_vec(),
+        )?;
+        session.data(channel, PROMPT.to_vec())?;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        for &b in data {
+            let line = self.lines.entry(channel).or_default();
+            match b {
+                b'\r' | b'\n' => {
+                    let cmd = std::mem::take(line);
+                    session.data(channel, b"\r\n".to_vec())?;
+                    let cmd = cmd.trim();
+                    let out: String = match cmd {
+                        "" => String::new(),
+                        "whoami" => format!("{USER}\r\n"),
+                        "stty size" => {
+                            let (c, r) = self.obs.lock().unwrap().sizes.last().copied().unwrap_or((80, 24));
+                            format!("{r} {c}\r\n")
+                        }
+                        "colors" => "\x1b[31mred\x1b[0m \x1b[1;32mbold-green\x1b[0m \x1b[7minverse\x1b[0m\r\n".into(),
+                        "exit" => {
+                            session.exit_status_request(channel, 0)?;
+                            session.eof(channel)?;
+                            session.close(channel)?;
+                            return Ok(());
+                        }
+                        // Simulate the server dying: ending the session drops the TCP connection.
+                        "crash" => return Err(russh::Error::Disconnect),
+                        c if c.starts_with("echo ") => format!("{}\r\n", &c[5..]),
+                        c => format!("sh: {c}: command not found\r\n"),
+                    };
+                    session.data(channel, out.into_bytes())?;
+                    session.data(channel, PROMPT.to_vec())?;
+                }
+                0x7f => {
+                    if line.pop().is_some() {
+                        session.data(channel, b"\x08 \x08".to_vec())?;
+                    }
+                }
+                0x03 => {
+                    line.clear();
+                    session.data(channel, b"^C\r\n".to_vec())?;
+                    session.data(channel, PROMPT.to_vec())?;
+                }
+                0x20..=0x7e => {
+                    line.push(b as char);
+                    session.data(channel, vec![b])?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}

@@ -163,5 +163,9 @@ pub struct LinkStats {
 }
 
 pub(crate) fn ratio(a: u64, b: u64) -> f32 {
-    if b == 0 { 0.0 } else { (a as f64 / b as f64) as f32 }
+    if b == 0 {
+        0.0
+    } else {
+        (a as f64 / b as f64) as f32
+    }
 }

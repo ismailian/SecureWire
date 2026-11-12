@@ -14,7 +14,14 @@ pub fn parse_ps(payload: &str) -> Vec<Process> {
             let rss_kib: u64 = num(it.next()?)?;
             let elapsed_s = num(it.next()?)?;
             let command = it.collect::<Vec<_>>().join(" ");
-            Some(Process { pid, user, cpu, rss: rss_kib * 1024, elapsed_s, command })
+            Some(Process {
+                pid,
+                user,
+                cpu,
+                rss: rss_kib * 1024,
+                elapsed_s,
+                command,
+            })
         })
         .collect()
 }

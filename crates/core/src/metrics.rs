@@ -17,7 +17,11 @@ pub struct RingBuffer {
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0);
-        Self { buf: vec![0.0; capacity], head: 0, len: 0 }
+        Self {
+            buf: vec![0.0; capacity],
+            head: 0,
+            len: 0,
+        }
     }
 
     pub fn push(&mut self, v: f32) {
@@ -60,7 +64,11 @@ impl RingBuffer {
 }
 
 fn pct(part: u64, whole: u64) -> f32 {
-    if whole == 0 { 0.0 } else { (part as f64 * 100.0 / whole as f64) as f32 }
+    if whole == 0 {
+        0.0
+    } else {
+        (part as f64 * 100.0 / whole as f64) as f32
+    }
 }
 
 fn delta(a: &CpuTimes, b: &CpuTimes) -> CpuTimes {
@@ -96,7 +104,12 @@ impl CpuTracker {
             }
             let d = delta(&p.total, &f.total);
             let total = d.total();
-            let cores = p.cores.iter().zip(&f.cores).map(|(a, b)| busy_pct(&delta(a, b))).collect();
+            let cores = p
+                .cores
+                .iter()
+                .zip(&f.cores)
+                .map(|(a, b)| busy_pct(&delta(a, b)))
+                .collect();
             Some(CpuSample {
                 total: busy_pct(&d),
                 user: pct(d.user, total),
@@ -136,7 +149,11 @@ impl NetTracker {
                     let p = prev.iter().find(|p| p.name == d.name)?;
                     let rx = d.rx.saturating_sub(p.rx) as f64 / dt;
                     let tx = d.tx.saturating_sub(p.tx) as f64 / dt;
-                    Some(NetSample { iface: d.name.clone(), rx_bps: rx, tx_bps: tx })
+                    Some(NetSample {
+                        iface: d.name.clone(),
+                        rx_bps: rx,
+                        tx_bps: tx,
+                    })
                 })
                 .max_by(|a, b| (a.rx_bps + a.tx_bps).total_cmp(&(b.rx_bps + b.tx_bps)))
         });
@@ -188,8 +205,13 @@ mod tests {
 
     #[test]
     fn cpu_percentages() {
-        let a = parse_cpu_frame("uptime 100 0\ncpu 100 0 100 800 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0").unwrap();
-        let b = parse_cpu_frame("uptime 102 0\ncpu 150 0 130 900 20 0 0 0\ncpu0 150 0 130 900 20 0 0 0").unwrap();
+        let a =
+            parse_cpu_frame("uptime 100 0\ncpu 100 0 100 800 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0")
+                .unwrap();
+        let b = parse_cpu_frame(
+            "uptime 102 0\ncpu 150 0 130 900 20 0 0 0\ncpu0 150 0 130 900 20 0 0 0",
+        )
+        .unwrap();
         let mut t = CpuTracker::default();
         assert!(t.update(a).is_none());
         let s = t.update(b).unwrap();
@@ -212,9 +234,22 @@ mod tests {
     #[test]
     fn net_rates_pick_busiest_physical() {
         let mut t = NetTracker::default();
-        let d = |n: &str, rx, tx| NetDev { name: n.into(), rx, tx };
+        let d = |n: &str, rx, tx| NetDev {
+            name: n.into(),
+            rx,
+            tx,
+        };
         t.update(10.0, vec![d("lo", 0, 0), d("eth0", 0, 0), d("eth1", 0, 0)]);
-        let s = t.update(12.0, vec![d("lo", 1_000_000, 1_000_000), d("eth0", 4000, 2000), d("eth1", 10, 10)]).unwrap();
+        let s = t
+            .update(
+                12.0,
+                vec![
+                    d("lo", 1_000_000, 1_000_000),
+                    d("eth0", 4000, 2000),
+                    d("eth1", 10, 10),
+                ],
+            )
+            .unwrap();
         assert_eq!(s.iface, "eth0");
         assert_eq!(s.rx_bps, 2000.0);
         assert_eq!(s.tx_bps, 1000.0);

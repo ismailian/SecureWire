@@ -10,7 +10,11 @@ pub fn bytes(b: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
-    if i == 0 || v >= 100.0 { format!("{v:.0} {}", U[i]) } else { format!("{v:.1} {}", U[i]) }
+    if i == 0 || v >= 100.0 {
+        format!("{v:.0} {}", U[i])
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
 }
 
 /// Bytes as GiB with one decimal, no unit — for "5.1 / 7.8 GiB" pairs.
@@ -27,7 +31,11 @@ pub fn rate(bps: f64) -> String {
         v /= 1000.0;
         i += 1;
     }
-    if i == 0 || v >= 100.0 { format!("{v:.0} {}", U[i]) } else { format!("{v:.1} {}", U[i]) }
+    if i == 0 || v >= 100.0 {
+        format!("{v:.0} {}", U[i])
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
 }
 
 /// Seconds → `45s`, `12m`, `3h 4m`, `41d 6h`.

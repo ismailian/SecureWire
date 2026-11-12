@@ -1,8 +1,8 @@
 //! Design tokens (`design/design-tokens.md`) mapped onto egui. The only file
 //! allowed to construct colors.
 
-use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use egui::style::{Selection, WidgetVisuals};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 pub mod tok {
     use egui::Color32 as C;
@@ -67,7 +67,10 @@ pub fn visuals() -> Visuals {
     v.window_stroke = Stroke::new(1.0, LINE2);
     v.window_corner_radius = CornerRadius::same(6);
     v.menu_corner_radius = CornerRadius::same(4);
-    v.selection = Selection { bg_fill: ACC_DIM, stroke: Stroke::new(1.0, ACC) };
+    v.selection = Selection {
+        bg_fill: ACC_DIM,
+        stroke: Stroke::new(1.0, ACC),
+    };
     v.hyperlink_color = ACC;
     v.warn_fg_color = WARN;
     v.error_fg_color = ERR;
@@ -92,7 +95,11 @@ pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // Icons must also resolve inside monospace text (log toolbar, tables).
-    fonts.families.entry(FontFamily::Monospace).or_default().push("phosphor".into());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push("phosphor".into());
     ctx.set_fonts(fonts);
 
     ctx.set_theme(egui::ThemePreference::Dark);
@@ -103,7 +110,7 @@ pub fn install(ctx: &egui::Context) {
             (TextStyle::Body, FontId::proportional(12.5)),
             (TextStyle::Button, FontId::proportional(12.5)),
             (TextStyle::Monospace, FontId::monospace(12.0)),
-            (TextStyle::Heading, FontId::proportional(22.0)),
+            (TextStyle::Heading, FontId::proportional(14.0)), // window titles
         ]
         .into();
         s.spacing.item_spacing = egui::vec2(8.0, 4.0);
@@ -122,4 +129,33 @@ pub fn mono(size: f32) -> FontId {
 
 pub fn prop(size: f32) -> FontId {
     FontId::proportional(size)
+}
+
+/// Terminal colors (design-tokens.md "Terminal palette").
+pub fn terminal_palette() -> sw_term::Palette {
+    use egui::Color32 as C;
+    sw_term::Palette {
+        fg: TERM_FG,
+        bg: BG0,
+        cursor: ACC,
+        selection: C::from_rgb(0x1f, 0x4a, 0x46),
+        ansi: [
+            C::from_rgb(0x1a, 0x1f, 0x26),
+            ERR,
+            OK,
+            WARN,
+            INFO,
+            C::from_rgb(0xc7, 0x92, 0xea),
+            ACC,
+            TX1,
+            C::from_rgb(0x54, 0x5e, 0x6b),
+            C::from_rgb(0xf3, 0x8a, 0x7a),
+            C::from_rgb(0x7f, 0xd8, 0x97),
+            C::from_rgb(0xef, 0xc1, 0x72),
+            C::from_rgb(0x93, 0xc0, 0xf2),
+            C::from_rgb(0xd9, 0xb0, 0xf2),
+            C::from_rgb(0x7a, 0xd6, 0xca),
+            TX0,
+        ],
+    }
 }

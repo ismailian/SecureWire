@@ -78,3 +78,20 @@ Format: **context → decision → consequences**.
 - **Context:** Requiring NOPASSWD sudoers entries is friction; the user wants to type the sudo password once when the session starts and have it apply to every privileged command the app runs.
 - **Decision:** After login, the probe checks `id -u` and `sudo -n true`. Root → no sudo. NOPASSWD works → use `sudo -n`. Otherwise show the **Sudo password** prompt (skippable). The password is verified once (`sudo -S -k -p "" true`), then held in client memory for the lifetime of the host session (survives reconnects, cleared when the host tab closes or on "Forget sudo password"). Every privileged command the app runs uses `sudo -S -p ""` and receives the password as the **first line of its stdin** — never in argv, never in an environment variable, never in a file. Details: `collector-protocol.md §9`.
 - **Consequences:** Firewall, fail2ban, root-only logs and service actions work without sudoers changes. The password lives in memory as a `secrecy`/`zeroize` type, is never logged or persisted, and is never typed into the user's terminal tabs (the terminal stays the user's; their own `sudo` there prompts as usual). Wrong password: up to 3 attempts, then privileged features show "sudo not authorised" until retried from the status bar (avoids PAM faillock lockouts). Hosts with `Defaults requiretty` need a PTY for sudo — detected in the probe and handled by running privileged commands on a PTY channel.
+
+### D-018 · App shortcuts use Ctrl+Shift
+- **Context:** The mock used `Ctrl B` / `Ctrl J` / `Ctrl K`. In a terminal those belong to the shell: `Ctrl B` is the tmux prefix, `Ctrl K`/`Ctrl J` are readline keys.
+- **Decision:** App shortcuts are `Ctrl Shift P` (palette), `Ctrl Shift B/R/J` (panels), `Ctrl Shift T/W` (tabs), `Ctrl Tab`. `F5` refreshes only when the terminal is not focused. Everything else goes to the shell.
+- **Consequences:** ui-spec §6 updated; the HTML prototype keeps the old labels.
+
+### D-019 · Terminal: steady cursor, no remote clipboard, paste is sanitised
+- **Decision:** No cursor blink (zero repaints while idle). OSC 52 clipboard reads/writes from the remote are ignored. Pasted text has ESC stripped and is wrapped in bracketed-paste markers when the app asked for them. Plain `Ctrl C` copies only while a selection exists, otherwise sends SIGINT; `Ctrl V` pastes.
+- **Consequences:** `Ctrl V` (literal-next) can't be sent to the shell. Bold renders as bright color (no bold monospace font loaded yet).
+
+### D-020 · SSH tested against an in-process server
+- **Context:** No local sshd, Docker or WSL on the dev machine; tests must not need a VPS.
+- **Decision:** `crates/ssh/tests/support` runs a russh server with a fake shell; its host and client keys are generated per test run (no private keys in the repo; `dev_sshd` keeps a stable set in `target/dev-sshd-keys`). The integration tests drive the real actor through it: TOFU, known/changed keys, password, key file (plain + encrypted), slow host-key answer, PTY sizing, exit status, dropped connection + reconnect. `examples/dev_sshd.rs` exposes the same server on 127.0.0.1:2222 for manual GUI testing.
+- **Consequences:** Real-shell behaviour (vim, htop, tmux) still needs a manual check on a real Linux host.
+
+### D-021 · Host-key prompts don't count against the connect timeout
+- **Decision:** The TCP connect is bounded by `connect_timeout` (15 s). The SSH handshake uses an idle deadline that re-arms while a host-key prompt is open and for `connect_timeout` after it closes. A late answer to an abandoned prompt is discarded and can never approve a later key. Each PTY channel has a generation number, so a reader from a dropped connection can't close the tab's new shell.

@@ -12,13 +12,13 @@ Companion to the clickable prototype in [`prototype/index.html`](prototype/index
 4. **Pay only for what you look at.** Collapsed sections and hidden panels stop collecting (see `collector-protocol.md §5`). The UI must make this visible: a collapsed section's header still shows its last summary with its age.
 5. **Every number has a unit and an age.** Units: binary (KiB, MiB, GiB) for memory/disk sizes, decimal per second (KB/s, MB/s) for rates, `%` for utilisation. Tabular figures everywhere numbers update.
 6. **Show the command.** Anything the app runs on the user's behalf can be revealed ("Read via `sudo -n ufw status verbose`"), and any action that changes the server shows the exact command before running it.
-7. **Cheap to draw.** Flat fills, 1 px strokes, radius ≤ 4 px, no gradients, no blur, no animation except the live-dot pulse, the cursor blink, and a 1 s highlight on new log lines. Everything here maps to plain `egui::Painter` calls.
+7. **Cheap to draw.** Flat fills, 1 px strokes, radius ≤ 4 px, no gradients, no blur, no animation except the live-dot pulse and a 1 s highlight on new log lines. Everything here maps to plain `egui::Painter` calls.
 
 ## 2. Layout
 
 ```
 ┌──────────────────────────── Top bar (38) ──────────────────────────────────┐
-│ ◆ SecureWire │ host tabs … [+] │   [ ⌕ Command palette  Ctrl K ]   │ ▯ ▭ ▯ ⚙ │
+│ ◆ SecureWire │ host tabs … [+] │   [ ⌕ Command palette  Ctrl⇧P ]   │ ▯ ▭ ▯ ⚙ │
 ├───────────┬────────────────────────────────────────────────┬───────────────┤
 │           │ terminal tabs                       PTY · ch #  │               │
 │  SYSTEM   │                                                 │    WATCH      │
@@ -60,8 +60,8 @@ Panel visibility, sizes, collapsed sections, active bottom tab and log filters p
 | Brand | Glyph + "SecureWire". Not interactive. |
 | Host tabs | One per open host. Status dot = worst current state (green ok · amber warning · red error · gray disconnected). Hover shows `user@host:port` and the reason for the color. Middle-click / × closes (asks if terminals are running). Drag to reorder. |
 | `+` | Opens **Connect** dialog. |
-| Command palette | `Ctrl K`. Fuzzy over: actions (restart service, tail file, largest dirs, who's on port, ban IP, new terminal), hosts, services, log sources. Actions that need input open a small parameter prompt in the palette itself. |
-| Layout toggles | Left (`Ctrl B`), bottom (`Ctrl J`), right (`Ctrl Alt B`). Teal when visible. |
+| Command palette | `Ctrl Shift P`. Fuzzy over: actions (restart service, tail file, largest dirs, who's on port, ban IP, new terminal), hosts, services, log sources. Actions that need input open a small parameter prompt in the palette itself. |
+| Layout toggles | Left (`Ctrl Shift B`), bottom (`Ctrl Shift J`), right (`Ctrl Shift R`). Teal when visible. |
 | Settings | Opens settings window (theme, fonts, tier intervals, thresholds, keybindings). |
 
 ### 3.2 Left panel — SYSTEM
@@ -148,17 +148,18 @@ All dialogs: title bar with icon + title + host name, × close, body, footer wit
 
 | Keys | Action |
 |---|---|
-| `Ctrl K` | Command palette |
-| `Ctrl B` / `Ctrl Alt B` / `Ctrl J` | Toggle left / right / bottom panel |
+| `Ctrl Shift P` | Command palette |
+| `Ctrl Shift B` / `Ctrl Shift R` / `Ctrl Shift J` | Toggle left / right / bottom panel |
 | `Ctrl Shift T` / `Ctrl Shift W` | New / close terminal tab |
 | `Ctrl Tab` / `Ctrl Shift Tab` | Next / previous terminal tab |
 | `Ctrl 1…9` | Switch host tab |
 | `Ctrl Shift L` | Focus logs filter |
-| `Ctrl Shift C` / `Ctrl Shift V` | Copy / paste in terminal |
-| `F5` | Refresh all sections now (`NOW` for every enabled section) |
+| `Ctrl Shift C` / `Ctrl V` or `Ctrl Shift V` | Copy / paste in terminal. Plain `Ctrl C` copies only while a selection exists, otherwise it sends SIGINT. |
+| `Shift PageUp` / `Shift PageDown` | Scroll terminal history |
+| `F5` | Refresh all sections now — only when the terminal does **not** have focus (htop and mc use F5) |
 | `Esc` | Close dialog / palette; return focus to terminal |
 
-The terminal swallows all other keys while focused (so `Ctrl C`, `Ctrl D`, `Ctrl R`, etc. reach the shell). App shortcuts above are the only ones intercepted.
+The terminal swallows all other keys while focused (so `Ctrl B` for tmux, `Ctrl C`, `Ctrl D`, `Ctrl R`, `Ctrl K` etc. reach the shell). App shortcuts use `Ctrl Shift` for that reason (D-018) and are the only ones intercepted. The prototype still shows the older single-Ctrl shortcuts; this table wins.
 
 ## 7. Prototype coverage
 

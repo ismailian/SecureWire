@@ -9,7 +9,8 @@ use sw_core::alerts::Alert;
 use sw_core::logs::{Level, LogLine, sanitize};
 use sw_core::metrics::RingBuffer;
 use sw_core::model::{
-    CpuSample, DiskIo, HostStatic, LinkStats, MemSample, Mount, NetSample, Process, ServiceInfo, Session,
+    CpuSample, DiskIo, HostStatic, LinkStats, MemSample, Mount, NetSample, Process, ServiceInfo,
+    Session,
 };
 use sw_ssh::api::{ConnInfo, ConnState, EventKind, LogKind};
 
@@ -37,7 +38,11 @@ pub struct LogStore {
 
 impl LogStore {
     fn new(cap: usize) -> Self {
-        Self { lines: VecDeque::with_capacity(cap.min(4096)), first_seq: 0, cap }
+        Self {
+            lines: VecDeque::with_capacity(cap.min(4096)),
+            first_seq: 0,
+            cap,
+        }
     }
 
     fn push(&mut self, l: LogLine) -> u64 {
@@ -50,7 +55,8 @@ impl LogStore {
     }
 
     pub fn get(&self, seq: u64) -> Option<&LogLine> {
-        seq.checked_sub(self.first_seq).and_then(|i| self.lines.get(i as usize))
+        seq.checked_sub(self.first_seq)
+            .and_then(|i| self.lines.get(i as usize))
     }
 
     pub fn first_seq(&self) -> u64 {
@@ -58,7 +64,10 @@ impl LogStore {
     }
 
     pub fn iter_seq(&self) -> impl Iterator<Item = (u64, &LogLine)> {
-        self.lines.iter().enumerate().map(|(i, l)| (self.first_seq + i as u64, l))
+        self.lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (self.first_seq + i as u64, l))
     }
 }
 
@@ -154,7 +163,12 @@ impl HostView {
             }
             EventKind::Services(mut s) => {
                 // Failed first, then by name (ui-spec §3.5).
-                s.sort_by_key(|x| (x.active != sw_core::model::ActiveState::Failed, x.id.clone()));
+                s.sort_by_key(|x| {
+                    (
+                        x.active != sw_core::model::ActiveState::Failed,
+                        x.id.clone(),
+                    )
+                });
                 self.services = s;
                 self.last_sample.insert(Section::Svc, now);
             }
@@ -194,6 +208,11 @@ impl HostView {
             EventKind::SectionError { section, code } => {
                 self.section_errors.insert(section, code);
             }
+            // Handled by the app (dialogs, banners, terminal tabs).
+            EventKind::HostKeyPrompt { .. }
+            | EventKind::AuthFailed(_)
+            | EventKind::Error(_)
+            | EventKind::PtyClosed { .. } => {}
         }
     }
 }
@@ -236,7 +255,10 @@ impl LogFilter {
         self.regex_invalid = false;
         self.regex = None;
         if !q.is_empty() {
-            match regex_lite::RegexBuilder::new(&q).case_insensitive(true).build() {
+            match regex_lite::RegexBuilder::new(&q)
+                .case_insensitive(true)
+                .build()
+            {
                 Ok(r) => self.regex = Some(r),
                 Err(_) => self.regex_invalid = true,
             }
@@ -257,7 +279,10 @@ impl LogFilter {
         }
         match &self.regex {
             Some(r) => r.is_match(&l.msg),
-            None => l.msg.to_ascii_lowercase().contains(&self.query.to_ascii_lowercase()),
+            None => l
+                .msg
+                .to_ascii_lowercase()
+                .contains(&self.query.to_ascii_lowercase()),
         }
     }
 
@@ -268,11 +293,20 @@ impl LogFilter {
             self.matches.pop_front();
         }
         if self.dirty {
-            self.matches = view.logs.iter_seq().filter(|(_, l)| self.accepts(l, &view.sources)).map(|(s, _)| s).collect();
+            self.matches = view
+                .logs
+                .iter_seq()
+                .filter(|(_, l)| self.accepts(l, &view.sources))
+                .map(|(s, _)| s)
+                .collect();
             self.dirty = false;
         } else {
             for &seq in &view.new_log_seqs {
-                if view.logs.get(seq).is_some_and(|l| self.accepts(l, &view.sources)) {
+                if view
+                    .logs
+                    .get(seq)
+                    .is_some_and(|l| self.accepts(l, &view.sources))
+                {
                     self.matches.push_back(seq);
                 }
             }

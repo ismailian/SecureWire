@@ -92,7 +92,10 @@ pub fn detect_level(preset: Preset, msg: &str) -> Level {
             }
         }
         Preset::Generic => {
-            if ["fatal", "crit", "error", "failed", "failure", "panic"].iter().any(|w| has_word_ci(msg, w)) {
+            if ["fatal", "crit", "error", "failed", "failure", "panic"]
+                .iter()
+                .any(|w| has_word_ci(msg, w))
+            {
                 Level::Error
             } else if ["warn", "warning"].iter().any(|w| has_word_ci(msg, w)) {
                 Level::Warn
@@ -118,13 +121,22 @@ fn has_word_ci(hay: &str, word: &str) -> bool {
     (0..=h.len() - n.len()).any(|i| {
         h[i..i + n.len()].eq_ignore_ascii_case(n)
             && (i == 0 || !h[i - 1].is_ascii_alphanumeric())
-            && h.get(i + n.len()).is_none_or(|c| !c.is_ascii_alphanumeric())
+            && h.get(i + n.len())
+                .is_none_or(|c| !c.is_ascii_alphanumeric())
     })
 }
 
 /// Replace control characters (except tab) so remote text can't spoof the UI.
 pub fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() && c != '\t' { '\u{fffd}' } else { c }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_control() && c != '\t' {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// One log line as stored by the UI.
@@ -145,17 +157,32 @@ mod tests {
     #[test]
     fn presets() {
         assert_eq!(
-            detect_level(Preset::Nginx, "2026/11/12 13:02:11 [error] 1123#1123: *1 connect() failed"),
+            detect_level(
+                Preset::Nginx,
+                "2026/11/12 13:02:11 [error] 1123#1123: *1 connect() failed"
+            ),
             Level::Error
         );
-        assert_eq!(detect_level(Preset::Mysql, "2026-11-12T13:05Z 0 [Warning] [MY-010055] x"), Level::Warn);
-        assert_eq!(detect_level(Preset::Fail2ban, "2026-11-12 13:05:41,1 fail2ban.actions [988]: NOTICE [sshd] Ban 1.2.3.4"), Level::Warn);
+        assert_eq!(
+            detect_level(Preset::Mysql, "2026-11-12T13:05Z 0 [Warning] [MY-010055] x"),
+            Level::Warn
+        );
+        assert_eq!(
+            detect_level(
+                Preset::Fail2ban,
+                "2026-11-12 13:05:41,1 fail2ban.actions [988]: NOTICE [sshd] Ban 1.2.3.4"
+            ),
+            Level::Warn
+        );
     }
 
     #[test]
     fn generic_uses_word_boundaries() {
         assert_eq!(detect_level(Preset::Generic, "terror alert"), Level::Info);
-        assert_eq!(detect_level(Preset::Generic, "Job FAILED: exit 1"), Level::Error);
+        assert_eq!(
+            detect_level(Preset::Generic, "Job FAILED: exit 1"),
+            Level::Error
+        );
         assert_eq!(detect_level(Preset::Generic, "warning: disk"), Level::Warn);
     }
 

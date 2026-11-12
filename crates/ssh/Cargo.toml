@@ -12,3 +12,12 @@ doctest = false
 
 [dependencies]
 sw-core.workspace = true
+sw-term.workspace = true
+russh.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+rand = "0.10"
+tokio = { workspace = true, features = ["rt", "net", "macros"] }

@@ -20,7 +20,8 @@ pub fn shell_quote(s: &str) -> String {
 pub fn is_valid_unit(s: &str) -> bool {
     (1..=255).contains(&s.len())
         && !s.starts_with('-')
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._:-".contains(&b))
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"@._:-".contains(&b))
 }
 
 /// Absolute path without NUL or newlines (it will still be quoted).
@@ -42,10 +43,24 @@ mod tests {
 
     #[test]
     fn units() {
-        for ok in ["nginx.service", "getty@tty1.service", "php8.3-fpm", "sys-devices-x:1.device"] {
+        for ok in [
+            "nginx.service",
+            "getty@tty1.service",
+            "php8.3-fpm",
+            "sys-devices-x:1.device",
+        ] {
             assert!(is_valid_unit(ok), "{ok}");
         }
-        for bad in ["", "-x", "a b", "a;b", "$(x)", "a\nb", "a'b", &"a".repeat(256)] {
+        for bad in [
+            "",
+            "-x",
+            "a b",
+            "a;b",
+            "$(x)",
+            "a\nb",
+            "a'b",
+            &"a".repeat(256),
+        ] {
             assert!(!is_valid_unit(bad), "{bad:?}");
         }
     }

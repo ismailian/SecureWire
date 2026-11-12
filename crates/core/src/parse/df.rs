@@ -17,7 +17,13 @@ pub fn parse_df(payload: &str) -> Vec<Mount> {
             if mount.is_empty() || size == 0 {
                 return None;
             }
-            Some(Mount { fs: fs.to_owned(), mount, size, used, avail })
+            Some(Mount {
+                fs: fs.to_owned(),
+                mount,
+                size,
+                used,
+                avail,
+            })
         })
         .collect()
 }

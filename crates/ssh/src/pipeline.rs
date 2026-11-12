@@ -32,7 +32,9 @@ impl Pipeline {
     pub fn on_frame(&mut self, frame: Frame, out: &mut Vec<EventKind>) {
         match frame {
             Frame::Hello { proto, .. } => self.protocol = Some(proto),
-            Frame::Data { section, payload, .. } => {
+            Frame::Data {
+                section, payload, ..
+            } => {
                 self.errors.remove(&section);
                 self.on_data(section, &payload, out);
             }
@@ -84,13 +86,22 @@ impl Pipeline {
                 self.eval_alerts(out);
             }
             // Parsers for these arrive with their milestones (M3).
-            Section::Ports | Section::Conns | Section::Fw | Section::F2b | Section::Auth | Section::Timers => {}
+            Section::Ports
+            | Section::Conns
+            | Section::Fw
+            | Section::F2b
+            | Section::Auth
+            | Section::Timers => {}
         }
     }
 
     fn eval_alerts(&mut self, out: &mut Vec<EventKind>) {
         let a = alerts::evaluate(
-            alerts::Inputs { services: &self.services, mounts: &self.mounts, mem: self.mem.as_ref() },
+            alerts::Inputs {
+                services: &self.services,
+                mounts: &self.mounts,
+                mem: self.mem.as_ref(),
+            },
             &self.thresholds,
         );
         if a != self.alerts {
@@ -104,7 +115,9 @@ impl Pipeline {
 fn parse_static(p: &str) -> HostStatic {
     let mut s = HostStatic::default();
     for line in p.lines() {
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let v = v.trim().trim_matches('"');
         match k {
             "hostname" => s.hostname = v.into(),

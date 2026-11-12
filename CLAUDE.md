@@ -3,9 +3,9 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** M0 done (2026-11-12) — workspace, theme, full panel layout driven by the demo source through the real frame decoder and parsers. No SSH yet. Next: M1 (connect + terminal).
+**Status:** M1 done (2026-11-12) — real SSH: connect dialog, host-key TOFU, key/password/agent auth, multi-tab PTY terminal on one connection, reconnect. Panels show live data only for `--demo` until the collector lands. Not yet verified on a real VPS (vim/htop/tmux). Next: M2 (probe, sudo, collector).
 
-M0 measurements (release, Windows, demo host, window focused): idle CPU 0.3 % of one core · private memory 36 MB · binary 7.3 MB.
+Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB.
 
 ---
 
@@ -26,7 +26,7 @@ M0 measurements (release, Windows, demo host, window focused): idle CPU 0.3 % of
 2. **Nothing installed or written on the server.** The collector is a bash script passed as the exec command. Its stdin is the control channel.
 3. **Pay only for what is visible.** Collapsed sections, hidden panels, unfocused/minimized windows and inactive host tabs reduce or stop collection (protocol §5). Every new section must support `ON`/`OFF`/`NOW`.
 4. **The UI thread never blocks and never parses.** No I/O, no locks held across await points, no regex compilation, no allocation-heavy work in `update()`. Data arrives as ready-to-draw structs.
-5. **No continuous repaint.** eframe runs reactive. Repaints come from input, from the net thread (`request_repaint`, throttled), and from timed `request_repaint_after` for the cursor blink only while the terminal is focused.
+5. **No continuous repaint.** eframe runs reactive. Repaints come from input, from the net thread (`request_repaint`, throttled), and from a 1 s `request_repaint_after` only while collector data is stale. The terminal cursor does not blink (D-019).
 6. **Security:** verify host keys (TOFU dialog, hard stop on mismatch); never store passwords on disk; the sudo password is asked once per host session, held only in memory (`secrecy`), and reaches `sudo -S` only via channel stdin — never argv, env, logs or the user's terminal (protocol §9, D-017); validate every identifier and quote every argument that goes into a remote command; treat all remote text (logs, unit names, window titles) as untrusted data — strip control characters before drawing outside the terminal.
 7. **Destructive actions show the exact command and ask first.** Restart/stop service, kill, ban IP, anything that writes.
 
@@ -47,7 +47,7 @@ M0 measurements (release, Windows, demo host, window focused): idle CPU 0.3 % of
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Threads:** main (UI) + one net thread. That's it at idle (D-016).
+- **Threads:** we create two — main (UI) and one net thread running a current-thread tokio runtime for every host (D-016). The process shows ~15 OS threads, the rest belonging to winit, the GL driver and Windows.
 - **UI → net:** `tokio::sync::mpsc::UnboundedSender<Command>` (tagged with `HostId`).
 - **net → UI:** `std::sync::mpsc::Sender<Event>`; after sending, the actor calls a throttled repaint (≤ 1 per 50 ms for metrics/logs; immediate for terminal output and user-initiated results).
 - **Terminal grid** is the only shared state: the net thread feeds bytes into `Term`, the UI locks it briefly to render. Everything else is message passing.
@@ -72,25 +72,35 @@ crates/
     src/alerts.rs          # threshold rules → Vec<Alert>
     src/shell.rs           # shell_quote(), is_valid_unit(), is_valid_path()
     src/format.rs          # bytes / rate / duration formatting rules
+    src/config.rs          # hosts.toml types (HostConfig, HostsFile) — no I/O
   ssh/   securewire-ssh (lib sw_ssh) — net side
     src/api.rs             # Command / Event / EventKind / SudoMode / Throttle: the UI↔net contract
     src/pipeline.rs        # Frame → EventKind (trackers, alerts); shared by the demo and the real actor
     src/demo.rs            # fake server: byte-exact collector output through the real decoder + pipeline
-                           # [M1: actor.rs (russh HostActor), known_hosts.rs, probe.rs, sudo.rs]
+    src/actor.rs           # russh HostActor: connect, host-key TOFU, auth, PTY channels, keepalive, reconnect
+    src/handle.rs          # HostHandle / CmdTx (same handle for demo and real hosts)
+    src/lib.rs             # Net: the net thread + Net::connect()
+    tests/connect.rs       # end-to-end tests of the real actor against tests/support (in-process russh server)
+                           # test keys are generated per run (temp dir); no private keys in the repo
+    examples/dev_sshd.rs   # the same fake server on 127.0.0.1:2222 for manual GUI testing
+                           # [M2: probe.rs, sudo.rs, collector driver]
   app/   securewire (bin) — eframe App
     src/main.rs, app.rs    # NativeOptions (glow), event drain, panel order, section ON/OFF diffing, focus throttle
     src/theme.rs           # tokens + Visuals + fonts — the only place colors are constructed
     src/state.rs           # HostView (data, ring buffers, LogStore), HostUi (open sections, LogFilter)
+    src/store.rs           # config dir: hosts.toml load/save (atomic), SecureWire known_hosts path
+    src/dialogs.rs         # Connect, Host key (TOFU / changed), Auth retry
     src/widgets.rs         # section, sparkline, bar, badge, dot, switch, icon_button, toggle_chip
     src/panels/            # topbar, status, system (left), watch (right), dock (bottom), terminal (central)
-  [M1] term/               # alacritty_terminal glue + egui terminal widget
+  term/  securewire-term (lib sw_term) — Terminal (alacritty_terminal + VT parser behind a FairMutex),
+                           # TerminalView egui widget (renderer, keys, mouse, selection, clipboard), input.rs (xterm key encoding)
 [M2] collector/            # collector.sh, probe.sh — include_str!, no single quotes, shellcheck-clean
 design/                    # see §1
 ```
 
 Never name a package `core` (it shadows Rust's `core`): packages are `securewire-*`, libs are `sw_*`.
 
-Dependency direction: `app → ssh → core`, `app → term`, `ssh → term` (feeds `Term`). `core` depends only on `memchr` today; keep it that light (`serde`/`serde_json` join for config and journal JSON).
+Dependency direction: `app → ssh → core`, `app → term`, `ssh → term` (feeds `Term`). `core` depends only on `memchr`, `serde` and `toml`; keep it that light (`serde_json` joins for journal JSON).
 
 ### Pinned crates
 | Crate | Version | Notes |
@@ -99,10 +109,17 @@ Dependency direction: `app → ssh → core`, `app → term`, `ssh → term` (fe
 | `egui-phosphor` | 0.14 | `regular` variant only |
 | `regex-lite` | 0.1 | log filter |
 | `memchr` | 2 | frame decoder |
+| `russh` | 0.65 | default features off, `ring` + `flate2` + `rsa` — the default `aws-lc-rs` backend needs cmake/NASM on Windows |
+| `tokio` | 1 | `rt`, `net`, `sync`, `time`, `macros`, `io-util` — current-thread runtime only |
+| `alacritty_terminal` | 0.26 | emulator + `vte` parser |
+| `parking_lot` | **0.12** | must match alacritty_terminal (its `FairMutex` hands out parking_lot 0.12 guards) |
+| `secrecy` | 0.10 | passwords / passphrases in memory |
+| `directories` | 6 | config dir |
+| `serde` + `toml` | 1 / 1 | hosts.toml |
 
 egui 0.36 API (differs from most examples online): `eframe::App::ui(&mut self, ui: &mut Ui, frame)` instead of `update(ctx, …)`; panels are `egui::Panel::{top,bottom,left,right}(id)` with `.exact_size / .default_size / .size_range` and `.show(ui, …)`; `CentralPanel::no_frame()`; `Margin` fields are `i8`; `rect_stroke` takes a `StrokeKind`; `NativeOptions` has no `vsync` field.
 
-Planned, added in their milestone: `russh`, `tokio` (`rt`, `net`, `sync`, `time`, `macros`), `alacritty_terminal`, `secrecy`/`zeroize`, `serde` + `toml` + `serde_json`, `directories`, `ssh2-config`, `parking_lot`, `tracing` + `tracing-subscriber`, `anyhow` (app) / `thiserror` (libs), `keyring` (optional, off by default).
+Planned, added in their milestone: `serde_json` (journal), `ssh2-config` (import `~/.ssh/config`), `tracing` + `tracing-subscriber`, `anyhow` (app) / `thiserror` (libs), `keyring` (optional, off by default).
 
 Add a dependency only when it removes real code; prefer std. Check `cargo tree -d` for duplicates after adding one.
 
@@ -209,7 +226,9 @@ cargo test --workspace                        # unit + fixture tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 shellcheck -s bash collector/collector.sh collector/probe.sh
-cargo test -p ssh -- --ignored                # integration: needs Docker (spins up an sshd container)
+cargo run -p securewire -- --connect user@host[:port] [--key PATH]   # pre-filled Connect dialog
+cargo run -p securewire-ssh --example dev_sshd # local fake SSH server: 127.0.0.1:2222, tester / securewire-test
+cargo test -p securewire-ssh --test connect   # real actor vs in-process server (no Docker, no VPS)
 ```
 
 ## 9. Testing strategy
@@ -235,7 +254,7 @@ cargo test -p ssh -- --ignored                # integration: needs Docker (spins
 | | Scope | Done when |
 |---|---|---|
 | **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. Open: Inter + JetBrains Mono not embedded yet (egui default fonts in use) |
-| **M1** | Connect dialog, known_hosts/TOFU, agent + key + password auth, one PTY tab with `alacritty_terminal` renderer, resize, copy/paste, reconnect | vim, htop, tmux usable |
+| **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** vim/htop/tmux on a real VPS; ssh-agent path untested (agent service disabled on dev machine) |
 | **M2** | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling, status bar | Matches protocol §8 targets on a real VPS |
 | **M3** | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Service failure shows within 1 s in Live mode |
 | **M4** | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | 50 lines/s stays < 4 ms/frame |

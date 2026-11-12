@@ -6,6 +6,7 @@
 //! Wire format: `design/collector-protocol.md`.
 
 pub mod alerts;
+pub mod config;
 pub mod format;
 pub mod frame;
 pub mod logs;

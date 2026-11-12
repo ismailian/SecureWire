@@ -12,7 +12,11 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
     let (mut active_enter, mut inactive_enter) = (0u64, 0u64);
     let mut flush = |cur: &mut ServiceInfo, ae: &mut u64, ie: &mut u64| {
         if !cur.id.is_empty() {
-            let mono = if matches!(cur.active, ActiveState::Active | ActiveState::Reloading) { *ae } else { *ie };
+            let mono = if matches!(cur.active, ActiveState::Active | ActiveState::Reloading) {
+                *ae
+            } else {
+                *ie
+            };
             if mono > 0 && uptime_s > 0.0 {
                 cur.state_age_s = Some((uptime_s - mono as f64 / 1e6).max(0.0) as u64);
             }
@@ -26,7 +30,9 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
             flush(&mut cur, &mut active_enter, &mut inactive_enter);
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         match k {
             "Id" => cur.id = v.to_owned(),
             "ActiveState" => cur.active = ActiveState::parse(v),

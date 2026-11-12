@@ -11,7 +11,7 @@ Everything about how SecureWire looks, behaves, and talks to servers, before (an
 | [`decisions.md`](decisions.md) | Decision log (D-001 …) for UI and architecture choices. |
 
 ## Trying the prototype
-- `Ctrl K` palette · `Ctrl B` / `Ctrl Alt B` / `Ctrl J` toggle panels · drag the 1 px dividers to resize.
+- (Prototype shortcuts: `Ctrl K` palette · `Ctrl B` / `Ctrl Alt B` / `Ctrl J` panels — the app uses `Ctrl Shift P/B/R/J`, see ui-spec §6) · drag the 1 px dividers to resize.
 - Click the **Live** switch in Services, the **+** next to it, and the sliders icon in the Logs toolbar for the configuration dialogs.
 - Click into the terminal and type `help`, `free -h`, or `systemctl restart redis-server` (watch the Services panel).
 

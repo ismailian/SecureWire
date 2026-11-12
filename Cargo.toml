@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/ssh", "crates/app"]
+members = ["crates/core", "crates/term", "crates/ssh", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +22,12 @@ regex-lite = "0.1"
 thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"   # must match alacritty_terminal (its FairMutex guards are parking_lot 0.12)
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+alacritty_terminal = "0.26"
+secrecy = "0.10"
+directories = "6"
+sw-term = { path = "crates/term", package = "securewire-term" }
 
 # ---- build profiles (user preference: fast, small builds) ----
 [profile.dev]

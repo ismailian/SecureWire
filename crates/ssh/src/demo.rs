@@ -20,27 +20,10 @@ use crate::Waker;
 use crate::api::{
     Command, ConnInfo, ConnState, Event, EventKind, HostId, LogKind, LogSourceInfo, SudoMode,
 };
+use crate::handle::{CmdTx, HostHandle};
 use crate::pipeline::Pipeline;
 
 const CORES: usize = 4;
-
-/// Handle to a running host source. Dropping it stops the source.
-pub struct HostHandle {
-    pub id: HostId,
-    tx: Sender<Command>,
-}
-
-impl HostHandle {
-    pub fn send(&self, c: Command) {
-        let _ = self.tx.send(c);
-    }
-}
-
-impl Drop for HostHandle {
-    fn drop(&mut self) {
-        let _ = self.tx.send(Command::Shutdown);
-    }
-}
 
 pub fn spawn_demo_host(id: HostId, events: Sender<Event>, wake: Waker) -> HostHandle {
     let (tx, rx) = mpsc::channel();
@@ -48,7 +31,7 @@ pub fn spawn_demo_host(id: HostId, events: Sender<Event>, wake: Waker) -> HostHa
         .name(format!("demo-host-{id}"))
         .spawn(move || DemoHost::new(id, events, wake).run(rx))
         .expect("spawn demo thread");
-    HostHandle { id, tx }
+    HostHandle::new(id, CmdTx::Std(tx))
 }
 
 /// xorshift64* — deterministic, dependency-free noise.
@@ -96,7 +79,9 @@ impl FakeServer {
             rng: Rng(0x9e37_79b9_7f4a_7c15),
             uptime,
             util: [0.2; CORES],
-            cores: [[1_000_000, 5_000, 300_000, 20_000_000, 40_000, 0, 9_000, 1_000]; CORES],
+            cores: [[
+                1_000_000, 5_000, 300_000, 20_000_000, 40_000, 0, 9_000, 1_000,
+            ]; CORES],
             mem_used_kib: 4_200_000.0,
             rx: 9_876_543_210,
             tx: 1_234_567_890,
@@ -126,7 +111,8 @@ impl FakeServer {
             t[6] += (busy * 0.05) as u64; // softirq
             t[7] += self.rng.range(0.0, 0.3) as u64; // steal
         }
-        self.mem_used_kib = (self.mem_used_kib + self.rng.range(-60_000.0, 60_000.0)).clamp(3_600_000.0, 5_600_000.0);
+        self.mem_used_kib = (self.mem_used_kib + self.rng.range(-60_000.0, 60_000.0))
+            .clamp(3_600_000.0, 5_600_000.0);
         self.rx_rate = (self.rx_rate * self.rng.range(0.75, 1.3)).clamp(80_000.0, 6_000_000.0);
         self.tx_rate = (self.tx_rate * self.rng.range(0.75, 1.3)).clamp(20_000.0, 1_500_000.0);
         self.rx += (self.rx_rate * dt) as u64;
@@ -152,14 +138,24 @@ impl FakeServer {
                     }
                 }
                 let line = |o: &mut String, name: &str, t: &[u64; 8]| {
-                    let _ = writeln!(o, "{name} {} {} {} {} {} {} {} {} 0 0", t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]);
+                    let _ = writeln!(
+                        o,
+                        "{name} {} {} {} {} {} {} {} {} 0 0",
+                        t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]
+                    );
                 };
                 line(&mut o, "cpu ", &total);
                 for (i, c) in self.cores.iter().enumerate() {
                     line(&mut o, &format!("cpu{i}"), c);
                 }
                 let avg = self.util.iter().sum::<f64>();
-                let _ = write!(o, "ctxt 99887766\nprocs_running 2\nloadavg {:.2} {:.2} {:.2} 2/345 6789", avg, avg * 0.9 + 0.1, 0.48);
+                let _ = write!(
+                    o,
+                    "ctxt 99887766\nprocs_running 2\nloadavg {:.2} {:.2} {:.2} 2/345 6789",
+                    avg,
+                    avg * 0.9 + 0.1,
+                    0.48
+                );
             }
             Section::Mem => {
                 let total = 8_130_000.0;
@@ -178,7 +174,11 @@ impl FakeServer {
                 );
             }
             Section::Dio => {
-                let _ = write!(o, " 252 0 vda 900000 0 {} 0 400000 0 {} 0 0 0 0\n 252 1 vda1 1 0 2 0 3 0 4 0 0 0 0", self.sect_r, self.sect_w);
+                let _ = write!(
+                    o,
+                    " 252 0 vda 900000 0 {} 0 400000 0 {} 0 0 0 0\n 252 1 vda1 1 0 2 0 3 0 4 0 0 0 0",
+                    self.sect_r, self.sect_w
+                );
             }
             Section::Df => {
                 let _ = write!(
@@ -189,8 +189,12 @@ impl FakeServer {
                 );
             }
             Section::Who => {
-                o.push_str("root     pts/0        2026-11-12 09:12   .          88123 (198.51.100.24)\n");
-                o.push_str("deploy   pts/1        2026-11-12 11:02 02:01        88200 (203.0.113.50)");
+                o.push_str(
+                    "root     pts/0        2026-11-12 09:12   .          88123 (198.51.100.24)\n",
+                );
+                o.push_str(
+                    "deploy   pts/1        2026-11-12 11:02 02:01        88200 (203.0.113.50)",
+                );
             }
             Section::Ps => {
                 let j = |r: &mut Rng, b: f64| (b * r.range(0.6, 1.4) * 10.0).round() / 10.0;
@@ -199,12 +203,28 @@ impl FakeServer {
                     (2211, "www-data", 6.1, 90_112, "php-fpm: pool www"),
                     (2212, "www-data", 5.8, 88_000, "php-fpm: pool www"),
                     (1123, "www-data", 1.2, 38_900, "nginx: worker process"),
-                    (988, "root", 0.6, 72_000, "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"),
-                    (612, "root", 0.2, 22_000, "/usr/lib/systemd/systemd-journald"),
+                    (
+                        988,
+                        "root",
+                        0.6,
+                        72_000,
+                        "/usr/bin/python3 /usr/bin/fail2ban-server -xf start",
+                    ),
+                    (
+                        612,
+                        "root",
+                        0.2,
+                        22_000,
+                        "/usr/lib/systemd/systemd-journald",
+                    ),
                     (1, "root", 0.0, 12_800, "/sbin/init"),
                 ];
                 for (pid, user, cpu, rss, cmd) in rows {
-                    let _ = writeln!(o, "{pid:>7} {user:<8} {:>4} {rss:>8} 3562000 {cmd}", j(&mut self.rng, cpu));
+                    let _ = writeln!(
+                        o,
+                        "{pid:>7} {user:<8} {:>4} {rss:>8} 3562000 {cmd}",
+                        j(&mut self.rng, cpu)
+                    );
                 }
             }
             Section::Svc => {
@@ -214,22 +234,89 @@ impl FakeServer {
                         o.push('\n');
                     }
                     let (state, sub, pid, mem, result, age, restarts) = match u.as_str() {
-                        "nginx.service" => ("active", "running", 1123, Some(39_845_888u64), "success", 41.0 * 86_400.0, 0),
-                        "mysql.service" => ("active", "running", 1342, Some(1_288_490_189), "success", 41.0 * 86_400.0, 0),
-                        "php8.3-fpm.service" => ("active", "running", 2201, Some(432_013_312), "success", 2.0 * 86_400.0 + 4.0 * 3600.0, 1),
-                        "fail2ban.service" => ("active", "running", 988, Some(73_728_000), "success", 41.0 * 86_400.0, 0),
-                        "redis-server.service" if self.redis_failed_at > 0.0 => {
-                            ("failed", "failed", 0, None, "exit-code", self.uptime - self.redis_failed_at, 3)
+                        "nginx.service" => (
+                            "active",
+                            "running",
+                            1123,
+                            Some(39_845_888u64),
+                            "success",
+                            41.0 * 86_400.0,
+                            0,
+                        ),
+                        "mysql.service" => (
+                            "active",
+                            "running",
+                            1342,
+                            Some(1_288_490_189),
+                            "success",
+                            41.0 * 86_400.0,
+                            0,
+                        ),
+                        "php8.3-fpm.service" => (
+                            "active",
+                            "running",
+                            2201,
+                            Some(432_013_312),
+                            "success",
+                            2.0 * 86_400.0 + 4.0 * 3600.0,
+                            1,
+                        ),
+                        "fail2ban.service" => (
+                            "active",
+                            "running",
+                            988,
+                            Some(73_728_000),
+                            "success",
+                            41.0 * 86_400.0,
+                            0,
+                        ),
+                        "redis-server.service" if self.redis_failed_at > 0.0 => (
+                            "failed",
+                            "failed",
+                            0,
+                            None,
+                            "exit-code",
+                            self.uptime - self.redis_failed_at,
+                            3,
+                        ),
+                        "redis-server.service" => (
+                            "active",
+                            "running",
+                            99001,
+                            Some(8_388_608),
+                            "success",
+                            2.0,
+                            3,
+                        ),
+                        "certbot.timer" => {
+                            ("active", "waiting", 0, None, "success", 6.0 * 3600.0, 0)
                         }
-                        "redis-server.service" => ("active", "running", 99001, Some(8_388_608), "success", 2.0, 3),
-                        "certbot.timer" => ("active", "waiting", 0, None, "success", 6.0 * 3600.0, 0),
                         _ => ("inactive", "dead", 0, None, "success", 0.0, 0),
                     };
-                    let _ = writeln!(o, "Id={u}\nActiveState={state}\nSubState={sub}\nMainPID={pid}");
-                    let _ = writeln!(o, "MemoryCurrent={}", mem.map_or("[not set]".into(), |m| m.to_string()));
-                    let _ = writeln!(o, "TasksCurrent={}\nNRestarts={restarts}\nResult={result}", if pid > 0 { 5 } else { 0 });
-                    let _ = writeln!(o, "ActiveEnterTimestampMonotonic={}", mono(age, self.uptime));
-                    let _ = writeln!(o, "InactiveEnterTimestampMonotonic={}", mono(age, self.uptime));
+                    let _ = writeln!(
+                        o,
+                        "Id={u}\nActiveState={state}\nSubState={sub}\nMainPID={pid}"
+                    );
+                    let _ = writeln!(
+                        o,
+                        "MemoryCurrent={}",
+                        mem.map_or("[not set]".into(), |m| m.to_string())
+                    );
+                    let _ = writeln!(
+                        o,
+                        "TasksCurrent={}\nNRestarts={restarts}\nResult={result}",
+                        if pid > 0 { 5 } else { 0 }
+                    );
+                    let _ = writeln!(
+                        o,
+                        "ActiveEnterTimestampMonotonic={}",
+                        mono(age, self.uptime)
+                    );
+                    let _ = writeln!(
+                        o,
+                        "InactiveEnterTimestampMonotonic={}",
+                        mono(age, self.uptime)
+                    );
                 }
             }
             _ => {}
@@ -245,12 +332,37 @@ struct Tier {
 }
 
 const LOG_SOURCES: [(&str, LogKind, &str, Preset); 6] = [
-    ("nginx", LogKind::File, "/var/log/nginx/error.log", Preset::Nginx),
-    ("mysql", LogKind::SudoFile, "/var/log/mysql/error.log", Preset::Mysql),
-    ("fail2ban", LogKind::SudoFile, "/var/log/fail2ban.log", Preset::Fail2ban),
+    (
+        "nginx",
+        LogKind::File,
+        "/var/log/nginx/error.log",
+        Preset::Nginx,
+    ),
+    (
+        "mysql",
+        LogKind::SudoFile,
+        "/var/log/mysql/error.log",
+        Preset::Mysql,
+    ),
+    (
+        "fail2ban",
+        LogKind::SudoFile,
+        "/var/log/fail2ban.log",
+        Preset::Fail2ban,
+    ),
     ("sshd", LogKind::Journal, "ssh.service", Preset::Generic),
-    ("redis", LogKind::Journal, "redis-server.service", Preset::Generic),
-    ("php-fpm", LogKind::Journal, "php8.3-fpm.service", Preset::Generic),
+    (
+        "redis",
+        LogKind::Journal,
+        "redis-server.service",
+        Preset::Generic,
+    ),
+    (
+        "php-fpm",
+        LogKind::Journal,
+        "php8.3-fpm.service",
+        Preset::Generic,
+    ),
 ];
 
 const LOG_LINES: [&[&str]; 6] = [
@@ -274,7 +386,10 @@ const LOG_LINES: [&[&str]; 6] = [
         "Connection closed by authenticating user root 192.0.2.155 port 40118 [preauth]",
         "Invalid user oracle from 198.51.100.88 port 33190",
     ],
-    &["Can't open the log file: Permission denied", "redis-server.service: Main process exited, code=exited, status=1/FAILURE"],
+    &[
+        "Can't open the log file: Permission denied",
+        "redis-server.service: Main process exited, code=exited, status=1/FAILURE",
+    ],
     &[
         "WARNING: [pool www] server reached pm.max_children setting (20), consider raising it",
         "NOTICE: [pool www] child 2290 started",
@@ -322,8 +437,16 @@ impl DemoHost {
             .map(String::from)
             .to_vec(),
             tiers: [
-                Tier { sections: &[Section::Cpu, Section::Mem, Section::Net, Section::Dio], every: 2, next: now },
-                Tier { sections: &[Section::Df, Section::Who, Section::Ps, Section::Svc], every: 10, next: now },
+                Tier {
+                    sections: &[Section::Cpu, Section::Mem, Section::Net, Section::Dio],
+                    every: 2,
+                    next: now,
+                },
+                Tier {
+                    sections: &[Section::Df, Section::Who, Section::Ps, Section::Svc],
+                    every: 10,
+                    next: now,
+                },
             ],
             next_log: now,
             bytes_window: (now, 0),
@@ -344,7 +467,14 @@ impl DemoHost {
             return;
         }
         for kind in self.pending.drain(..) {
-            if self.events.send(Event { host: self.id, kind }).is_err() {
+            if self
+                .events
+                .send(Event {
+                    host: self.id,
+                    kind,
+                })
+                .is_err()
+            {
                 return;
             }
         }
@@ -377,13 +507,18 @@ impl DemoHost {
                 port: 22,
                 host_key: "ed25519".into(),
                 key_known: true,
+                fingerprint: "SHA256:demo-host-key-not-real".into(),
                 sudo: SudoMode::Root,
             }),
             EventKind::State(ConnState::Connected),
             EventKind::LogSources(
                 LOG_SOURCES
                     .iter()
-                    .map(|(n, k, t, _)| LogSourceInfo { name: (*n).into(), kind: k.clone(), target: (*t).into() })
+                    .map(|(n, k, t, _)| LogSourceInfo {
+                        name: (*n).into(),
+                        kind: k.clone(),
+                        target: (*t).into(),
+                    })
                     .collect(),
             ),
         ]);
@@ -409,17 +544,29 @@ impl DemoHost {
             if now >= self.next_log {
                 let n = self.log_line();
                 self.send([EventKind::Logs(vec![n])]);
-                self.next_log = now + Duration::from_millis(400 + (self.server.rng.f() * 2200.0) as u64);
+                self.next_log =
+                    now + Duration::from_millis(400 + (self.server.rng.f() * 2200.0) as u64);
             }
             if now.duration_since(self.bytes_window.0) >= Duration::from_secs(5) {
-                self.overhead_bps = self.bytes_window.1 as f64 / now.duration_since(self.bytes_window.0).as_secs_f64();
+                self.overhead_bps = self.bytes_window.1 as f64
+                    / now.duration_since(self.bytes_window.0).as_secs_f64();
                 self.bytes_window = (now, 0);
                 let rtt = 34 + (self.server.rng.f() * 9.0) as u32;
-                self.send([EventKind::Link(LinkStats { rtt_ms: Some(rtt), overhead_bps: self.overhead_bps, channels: 5 })]);
+                self.send([EventKind::Link(LinkStats {
+                    rtt_ms: Some(rtt),
+                    overhead_bps: self.overhead_bps,
+                    channels: 5,
+                })]);
             }
 
             self.flush();
-            let next = self.tiers.iter().map(|t| t.next).chain([self.next_log]).min().unwrap_or(now);
+            let next = self
+                .tiers
+                .iter()
+                .map(|t| t.next)
+                .chain([self.next_log])
+                .min()
+                .unwrap_or(now);
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
                 Ok(c) => {
@@ -444,7 +591,12 @@ impl DemoHost {
             }
             Command::Now(s) => {
                 if s == Section::Cpu {
-                    self.server.tick(Instant::now().duration_since(self.last_tick).as_secs_f64().max(0.5));
+                    self.server.tick(
+                        Instant::now()
+                            .duration_since(self.last_tick)
+                            .as_secs_f64()
+                            .max(0.5),
+                    );
                     self.last_tick = Instant::now();
                 }
                 self.emit(s);
@@ -461,7 +613,8 @@ impl DemoHost {
                 self.units = u;
                 self.emit(Section::Svc);
             }
-            Command::Shutdown => {}
+            // Terminal, host-key and connection commands have no meaning for the demo host.
+            _ => {}
         }
     }
 
@@ -471,11 +624,22 @@ impl DemoHost {
         let src = *rng.pick(&[0usize, 0, 0, 1, 2, 2, 3, 3, 3, 5]);
         let msg = *rng.pick(LOG_LINES[src]);
         let level = match LOG_SOURCES[src].1 {
-            LogKind::Journal if msg.starts_with("WARNING") || msg.starts_with("Failed") || msg.starts_with("Invalid") => Level::Warn,
+            LogKind::Journal
+                if msg.starts_with("WARNING")
+                    || msg.starts_with("Failed")
+                    || msg.starts_with("Invalid") =>
+            {
+                Level::Warn
+            }
             LogKind::Journal => Level::Info,
             _ => detect_level(LOG_SOURCES[src].3, msg),
         };
-        LogLine { ts_ms: now_ms(), source: src as u16, level, msg: msg.to_owned() }
+        LogLine {
+            ts_ms: now_ms(),
+            source: src as u16,
+            level,
+            msg: msg.to_owned(),
+        }
     }
 
     fn backlog(&mut self) {
@@ -488,11 +652,20 @@ impl DemoHost {
                 let msg = LOG_LINES[src][i % LOG_LINES[src].len()];
                 let level = match (LOG_SOURCES[src].1.clone(), src) {
                     (_, 4) => Level::Error,
-                    (LogKind::Journal, _) if msg.starts_with("Failed") || msg.starts_with("WARNING") => Level::Warn,
+                    (LogKind::Journal, _)
+                        if msg.starts_with("Failed") || msg.starts_with("WARNING") =>
+                    {
+                        Level::Warn
+                    }
                     (LogKind::Journal, _) => Level::Info,
                     _ => detect_level(LOG_SOURCES[src].3, msg),
                 };
-                LogLine { ts_ms: base + i as i64 * 3900, source: src as u16, level, msg: msg.into() }
+                LogLine {
+                    ts_ms: base + i as i64 * 3900,
+                    source: src as u16,
+                    level,
+                    msg: msg.into(),
+                }
             })
             .collect();
         self.send([EventKind::Logs(lines)]);
@@ -500,7 +673,9 @@ impl DemoHost {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 #[cfg(test)]
@@ -513,13 +688,28 @@ mod tests {
         let mut srv = FakeServer::new();
         let mut dec = FrameDecoder::new();
         let mut pipe = Pipeline::new();
-        let units: Vec<String> = ["nginx.service", "redis-server.service"].map(String::from).to_vec();
+        let units: Vec<String> = ["nginx.service", "redis-server.service"]
+            .map(String::from)
+            .to_vec();
         let mut out = Vec::new();
         for round in 0..2 {
             srv.tick(2.0);
-            for s in [Section::Static, Section::Cpu, Section::Mem, Section::Net, Section::Dio, Section::Df, Section::Who, Section::Ps, Section::Svc] {
+            for s in [
+                Section::Static,
+                Section::Cpu,
+                Section::Mem,
+                Section::Net,
+                Section::Dio,
+                Section::Df,
+                Section::Who,
+                Section::Ps,
+                Section::Svc,
+            ] {
                 let mut frames = Vec::new();
-                dec.push(&encode(s, round * 100 + s as u64, &srv.payload(s, &units)), &mut frames);
+                dec.push(
+                    &encode(s, round * 100 + s as u64, &srv.payload(s, &units)),
+                    &mut frames,
+                );
                 assert_eq!(frames.len(), 1, "{s:?}");
                 for f in frames {
                     pipe.on_frame(f, &mut out);
@@ -528,14 +718,24 @@ mod tests {
         }
         assert_eq!(dec.dropped, 0);
         let has = |p: fn(&EventKind) -> bool| out.iter().any(p);
-        assert!(has(|e| matches!(e, EventKind::Cpu(c) if c.cores.len() == CORES && c.total > 0.0)));
-        assert!(has(|e| matches!(e, EventKind::Net(n) if n.iface == "eth0" && n.rx_bps > 0.0)));
-        assert!(has(|e| matches!(e, EventKind::DiskIo(d) if d.read_bps > 0.0)));
+        assert!(has(
+            |e| matches!(e, EventKind::Cpu(c) if c.cores.len() == CORES && c.total > 0.0)
+        ));
+        assert!(has(
+            |e| matches!(e, EventKind::Net(n) if n.iface == "eth0" && n.rx_bps > 0.0)
+        ));
+        assert!(has(
+            |e| matches!(e, EventKind::DiskIo(d) if d.read_bps > 0.0)
+        ));
         assert!(has(|e| matches!(e, EventKind::Mounts(m) if m.len() == 3)));
         assert!(has(|e| matches!(e, EventKind::Sessions(s) if s.len() == 2)));
-        assert!(has(|e| matches!(e, EventKind::Processes(p) if p.len() == 7)));
+        assert!(has(
+            |e| matches!(e, EventKind::Processes(p) if p.len() == 7)
+        ));
         assert!(has(|e| matches!(e, EventKind::Services(s) if s.len() == 2)));
-        assert!(has(|e| matches!(e, EventKind::Static(h) if h.cpus == CORES as u32)));
+        assert!(has(
+            |e| matches!(e, EventKind::Static(h) if h.cpus == CORES as u32)
+        ));
         assert!(has(|e| matches!(e, EventKind::Alerts(a) if a.len() == 2)));
     }
 }

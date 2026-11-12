@@ -37,7 +37,12 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Self { disk_warn: 0.80, disk_err: 0.90, mem_avail_warn: 0.15, mem_avail_err: 0.05 }
+        Self {
+            disk_warn: 0.80,
+            disk_err: 0.90,
+            mem_avail_warn: 0.15,
+            mem_avail_err: 0.05,
+        }
     }
 }
 
@@ -55,13 +60,19 @@ pub fn evaluate(i: Inputs<'_>, t: &Thresholds) -> Vec<Alert> {
     for s in i.services {
         if s.active == ActiveState::Failed {
             let name = s.short_name().to_owned();
-            let ago = s.state_age_s.map(|a| format!(" · {} ago", format::duration(a))).unwrap_or_default();
+            let ago = s
+                .state_age_s
+                .map(|a| format!(" · {} ago", format::duration(a)))
+                .unwrap_or_default();
             out.push(Alert {
                 key: format!("svc-failed:{}", s.id),
                 severity: Severity::Error,
                 title: format!("{} failed", s.id),
                 detail: format!("result {}{ago}", s.result),
-                actions: vec![AlertAction::ServiceLogs(name.clone()), AlertAction::RestartService(name)],
+                actions: vec![
+                    AlertAction::ServiceLogs(name.clone()),
+                    AlertAction::RestartService(name),
+                ],
             });
         }
     }
@@ -78,8 +89,21 @@ pub fn evaluate(i: Inputs<'_>, t: &Thresholds) -> Vec<Alert> {
         out.push(Alert {
             key: format!("disk:{}", m.mount),
             severity: sev,
-            title: format!("{} above {:.0}%", m.mount, (if sev == Severity::Error { t.disk_err } else { t.disk_warn }) * 100.0),
-            detail: format!("{} of {} used ({:.0}%)", format::bytes(m.used), format::bytes(m.size), f * 100.0),
+            title: format!(
+                "{} above {:.0}%",
+                m.mount,
+                (if sev == Severity::Error {
+                    t.disk_err
+                } else {
+                    t.disk_warn
+                }) * 100.0
+            ),
+            detail: format!(
+                "{} of {} used ({:.0}%)",
+                format::bytes(m.used),
+                format::bytes(m.size),
+                f * 100.0
+            ),
             actions: vec![AlertAction::LargestDirs(m.mount.clone())],
         });
     }
@@ -98,7 +122,11 @@ pub fn evaluate(i: Inputs<'_>, t: &Thresholds) -> Vec<Alert> {
                 key: "mem".into(),
                 severity,
                 title: "Memory running low".into(),
-                detail: format!("{} available of {}", format::bytes(mem.available()), format::bytes(mem.total)),
+                detail: format!(
+                    "{} available of {}",
+                    format::bytes(mem.available()),
+                    format::bytes(mem.total)
+                ),
                 actions: vec![],
             });
         }
@@ -115,7 +143,11 @@ mod tests {
     #[test]
     fn rules() {
         let services = [
-            ServiceInfo { id: "nginx.service".into(), active: ActiveState::Active, ..Default::default() },
+            ServiceInfo {
+                id: "nginx.service".into(),
+                active: ActiveState::Active,
+                ..Default::default()
+            },
             ServiceInfo {
                 id: "redis-server.service".into(),
                 active: ActiveState::Failed,
@@ -125,11 +157,34 @@ mod tests {
             },
         ];
         let mounts = [
-            Mount { mount: "/".into(), size: 100, used: 62, avail: 38, ..Default::default() },
-            Mount { mount: "/var/lib/mysql".into(), size: 100, used: 81, avail: 19, ..Default::default() },
+            Mount {
+                mount: "/".into(),
+                size: 100,
+                used: 62,
+                avail: 38,
+                ..Default::default()
+            },
+            Mount {
+                mount: "/var/lib/mysql".into(),
+                size: 100,
+                used: 81,
+                avail: 19,
+                ..Default::default()
+            },
         ];
-        let mem = MemSample { total: 100, used: 50, ..Default::default() };
-        let a = evaluate(Inputs { services: &services, mounts: &mounts, mem: Some(&mem) }, &Thresholds::default());
+        let mem = MemSample {
+            total: 100,
+            used: 50,
+            ..Default::default()
+        };
+        let a = evaluate(
+            Inputs {
+                services: &services,
+                mounts: &mounts,
+                mem: Some(&mem),
+            },
+            &Thresholds::default(),
+        );
         assert_eq!(a.len(), 2);
         assert_eq!(a[0].severity, Severity::Error);
         assert_eq!(a[0].detail, "result exit-code · 3m ago");

@@ -22,18 +22,42 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
 
         // Connection block.
         let (label, fg, bg) = match v.state {
-            ConnState::Connected => (format!("{} {}@{}", ph::LOCK_KEY, v.info.as_ref().map_or("", |i| &i.user), v.name), ACC, ACC_DIM),
+            ConnState::Connected => (
+                format!(
+                    "{} {}@{}",
+                    ph::LOCK_KEY,
+                    v.info.as_ref().map_or("", |i| &i.user),
+                    v.name
+                ),
+                ACC,
+                ACC_DIM,
+            ),
             ConnState::Connecting => (format!("{} connecting…", ph::PLUGS), TX2, BG3),
-            ConnState::Reconnecting { in_secs } => (format!("reconnecting in {in_secs}s"), WARN, WARN_DIM),
+            ConnState::Authenticating => (format!("{} authenticating…", ph::LOCK_KEY), TX2, BG3),
+            ConnState::Reconnecting { in_secs } => {
+                (format!("reconnecting in {in_secs}s"), WARN, WARN_DIM)
+            }
             ConnState::Disconnected => ("disconnected".into(), TX2, BG3),
         };
-        egui::Frame::NONE.fill(bg).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
-            ui.label(small(label, fg));
-        });
+        egui::Frame::NONE
+            .fill(bg)
+            .inner_margin(egui::Margin::symmetric(10, 4))
+            .show(ui, |ui| {
+                ui.label(small(label, fg));
+            });
         if let Some(i) = &v.info {
-            item(ui, RichText::new(format!("{}:{}", i.address, i.port)).monospace().size(11.5).color(TX2));
+            item(
+                ui,
+                RichText::new(format!("{}:{}", i.address, i.port))
+                    .monospace()
+                    .size(11.5)
+                    .color(TX2),
+            );
             let (t, c) = if i.key_known {
-                (format!("{} {} · known host", ph::SEAL_CHECK, i.host_key), TX2)
+                (
+                    format!("{} {} · known host", ph::SEAL_CHECK, i.host_key),
+                    TX2,
+                )
             } else {
                 (format!("{} {} · new key", ph::WARNING, i.host_key), WARN)
             };
@@ -43,6 +67,7 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
                 SudoMode::NoPasswd => ("sudo (nopasswd)", TX2),
                 SudoMode::Password => ("sudo ✓", TX2),
                 SudoMode::None => ("no sudo", WARN),
+                SudoMode::Unknown => ("sudo ?", TX3),
             };
             item(ui, small(t.into(), c));
         }
@@ -54,12 +79,54 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
             let age = v.age_s(Section::Cpu);
             let (fast, medium, slow) = throttle.tiers();
             let stale = age.is_some_and(|a| a > 3.0 * fast as f32);
-            item(ui, small(format!("sample {}s ago", age.map_or("—".into(), |a| format!("{a:.0}"))), if stale { WARN } else { TX2 }));
-            item(ui, small(format!("overhead ↓ {}", format::rate(v.link.overhead_bps)), TX2))
-                ;
-            let tiers = if slow == 0 { format!("tiers {fast}s · {medium}s · off") } else { format!("tiers {fast}s · {medium}s · {slow}s") };
-            item(ui, small(tiers, if throttle == Throttle::Normal { TX2 } else { INFO }));
-            item(ui, small(format!("{} 1 connection · {} channels", ph::GIT_MERGE, v.link.channels), TX2));
+            // Collector items only once a collector is actually sending (demo now, real hosts in M2).
+            if age.is_some() {
+                item(
+                    ui,
+                    small(
+                        format!(
+                            "sample {}s ago",
+                            age.map_or("—".into(), |a| format!("{a:.0}"))
+                        ),
+                        if stale { WARN } else { TX2 },
+                    ),
+                );
+                item(
+                    ui,
+                    small(
+                        format!("overhead ↓ {}", format::rate(v.link.overhead_bps)),
+                        TX2,
+                    ),
+                );
+                let tiers = if slow == 0 {
+                    format!("tiers {fast}s · {medium}s · off")
+                } else {
+                    format!("tiers {fast}s · {medium}s · {slow}s")
+                };
+                item(
+                    ui,
+                    small(
+                        tiers,
+                        if throttle == Throttle::Normal {
+                            TX2
+                        } else {
+                            INFO
+                        },
+                    ),
+                );
+            }
+            item(
+                ui,
+                small(
+                    format!(
+                        "{} 1 connection · {} channel{}",
+                        ph::GIT_MERGE,
+                        v.link.channels,
+                        if v.link.channels == 1 { "" } else { "s" }
+                    ),
+                    TX2,
+                ),
+            );
         });
     });
 }

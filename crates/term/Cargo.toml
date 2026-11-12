@@ -1,0 +1,16 @@
+[package]
+name = "securewire-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Terminal emulation (alacritty_terminal) and its egui renderer for SecureWire."
+
+[lib]
+name = "sw_term"
+doctest = false
+
+[dependencies]
+alacritty_terminal.workspace = true
+egui.workspace = true
+parking_lot.workspace = true

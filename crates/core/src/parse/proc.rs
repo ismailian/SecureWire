@@ -19,7 +19,14 @@ pub struct CpuTimes {
 impl CpuTimes {
     /// Sum of all states (guest time is already included in user/nice).
     pub fn total(&self) -> u64 {
-        self.user + self.nice + self.system + self.idle + self.iowait + self.irq + self.softirq + self.steal
+        self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait
+            + self.irq
+            + self.softirq
+            + self.steal
     }
 
     fn parse(fields: &[&str]) -> Option<Self> {
@@ -85,10 +92,21 @@ pub fn parse_cpu_frame(payload: &str) -> Option<CpuFrame> {
 
 /// `/proc/meminfo` → bytes. Missing keys count as 0.
 pub fn parse_meminfo(payload: &str) -> MemSample {
-    let (mut total, mut avail, mut free, mut buffers, mut cached, mut srecl, mut shmem, mut st, mut sf) =
-        (0u64, None, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (
+        mut total,
+        mut avail,
+        mut free,
+        mut buffers,
+        mut cached,
+        mut srecl,
+        mut shmem,
+        mut st,
+        mut sf,
+    ) = (0u64, None, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     for line in payload.lines() {
-        let Some((k, v)) = line.split_once(':') else { continue };
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         let kib: u64 = v.split_ascii_whitespace().next().and_then(num).unwrap_or(0);
         let b = kib * 1024;
         match k {
@@ -126,7 +144,10 @@ pub struct NetDev {
 impl NetDev {
     /// Interfaces that never represent "the server's traffic".
     pub fn is_virtual(&self) -> bool {
-        self.name == "lo" || ["docker", "veth", "br-", "virbr", "cni", "flannel", "tun", "wg"]
+        self.name == "lo"
+            || [
+                "docker", "veth", "br-", "virbr", "cni", "flannel", "tun", "wg",
+            ]
             .iter()
             .any(|p| self.name.starts_with(p))
     }
@@ -142,7 +163,11 @@ pub fn parse_net_dev(payload: &str) -> Vec<NetDev> {
             if fields.len() < 9 {
                 return None;
             }
-            Some(NetDev { name: name.trim().to_owned(), rx: num(fields[0])?, tx: num(fields[8])? })
+            Some(NetDev {
+                name: name.trim().to_owned(),
+                rx: num(fields[0])?,
+                tx: num(fields[8])?,
+            })
         })
         .collect()
 }
@@ -167,17 +192,29 @@ pub fn parse_diskstats(payload: &str) -> Vec<DiskStat> {
             if !is_whole_disk(name) {
                 return None;
             }
-            Some(DiskStat { name: name.to_owned(), sectors_read: num(f[5])?, sectors_written: num(f[9])? })
+            Some(DiskStat {
+                name: name.to_owned(),
+                sectors_read: num(f[5])?,
+                sectors_written: num(f[9])?,
+            })
         })
         .collect()
 }
 
 fn is_whole_disk(name: &str) -> bool {
-    if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("zram") || name.starts_with("dm-") {
+    if name.starts_with("loop")
+        || name.starts_with("ram")
+        || name.starts_with("zram")
+        || name.starts_with("dm-")
+    {
         return false;
     }
     if name.starts_with("nvme") || name.starts_with("mmcblk") {
-        return !name.contains('p') || !name.rsplit('p').next().is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()));
+        return !name.contains('p')
+            || !name
+                .rsplit('p')
+                .next()
+                .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()));
     }
     // sda, vda, xvda: whole disk has no trailing digit.
     !name.ends_with(|c: char| c.is_ascii_digit())
@@ -247,7 +284,14 @@ SwapFree:        1500000 kB",
 docker0: 5 1 0 0 0 0 0 0 6 1 0 0 0 0 0 0",
         );
         assert_eq!(v.len(), 3);
-        assert_eq!(v[1], NetDev { name: "eth0".into(), rx: 98765, tx: 43210 });
+        assert_eq!(
+            v[1],
+            NetDev {
+                name: "eth0".into(),
+                rx: 98765,
+                tx: 43210
+            }
+        );
         assert!(v[0].is_virtual() && v[2].is_virtual() && !v[1].is_virtual());
     }
 

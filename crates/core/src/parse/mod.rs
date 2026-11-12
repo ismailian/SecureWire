@@ -8,7 +8,10 @@ pub mod systemctl;
 pub mod who;
 
 pub use df::parse_df;
-pub use proc::{CpuFrame, CpuTimes, DiskStat, NetDev, parse_cpu_frame, parse_diskstats, parse_meminfo, parse_net_dev};
+pub use proc::{
+    CpuFrame, CpuTimes, DiskStat, NetDev, parse_cpu_frame, parse_diskstats, parse_meminfo,
+    parse_net_dev,
+};
 pub use ps::parse_ps;
 pub use systemctl::parse_systemctl_show;
 pub use who::parse_who;

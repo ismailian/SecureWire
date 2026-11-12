@@ -7,7 +7,9 @@ pub fn parse_who(payload: &str) -> Vec<Session> {
         .lines()
         .filter_map(|line| {
             let (head, from) = match line.rfind('(') {
-                Some(i) if line.ends_with(')') => (&line[..i], line[i + 1..line.len() - 1].to_owned()),
+                Some(i) if line.ends_with(')') => {
+                    (&line[..i], line[i + 1..line.len() - 1].to_owned())
+                }
                 _ => (line, String::new()),
             };
             let f: Vec<&str> = head.split_ascii_whitespace().collect();
