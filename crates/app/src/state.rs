@@ -97,6 +97,15 @@ pub struct HostView {
     pub new_log_seqs: Vec<u64>,
     pub unseen_errors: u32,
     pub probe: Option<sw_core::parse::Probe>,
+    pub listeners: Vec<sw_core::model::Listener>,
+    pub conns: Vec<sw_core::model::Conn>,
+    pub firewall: Option<sw_core::model::Firewall>,
+    pub jails: Vec<sw_core::model::Jail>,
+    pub auth: Option<sw_core::model::AuthStats>,
+    pub scheduled: Option<sw_core::model::Scheduled>,
+    pub units: Vec<sw_core::model::UnitInfo>,
+    /// Live service mode is actually following the journal (vs. polling fallback).
+    pub live_watching: bool,
 }
 
 impl HostView {
@@ -126,6 +135,14 @@ impl HostView {
             new_log_seqs: vec![],
             unseen_errors: 0,
             probe: None,
+            listeners: vec![],
+            conns: vec![],
+            firewall: None,
+            jails: vec![],
+            auth: None,
+            scheduled: None,
+            units: vec![],
+            live_watching: false,
         }
     }
 
@@ -211,6 +228,28 @@ impl HostView {
                 self.section_errors.insert(section, code);
             }
             EventKind::Probe(p) => self.probe = Some(p),
+            EventKind::Listeners(l) => {
+                self.listeners = l;
+                self.last_sample.insert(Section::Ports, now);
+            }
+            EventKind::Conns(c) => {
+                self.conns = c;
+                self.last_sample.insert(Section::Conns, now);
+            }
+            EventKind::Firewall(f) => {
+                self.firewall = Some(f);
+                self.section_errors.remove(&Section::Fw);
+                self.last_sample.insert(Section::Fw, now);
+            }
+            EventKind::Jails(j) => {
+                self.jails = j;
+                self.section_errors.remove(&Section::F2b);
+                self.last_sample.insert(Section::F2b, now);
+            }
+            EventKind::Auth(a) => self.auth = Some(a),
+            EventKind::Scheduled(s) => self.scheduled = Some(s),
+            EventKind::Units(u) => self.units = u,
+            EventKind::ServiceMode { live_watching } => self.live_watching = live_watching,
             EventKind::Sudo(mode) => {
                 if let Some(i) = &mut self.info {
                     i.sudo = mode;
@@ -328,7 +367,8 @@ pub struct HostUi {
     pub open: HashMap<&'static str, bool>,
     pub dock_tab: DockTab,
     pub filter: LogFilter,
-    pub services_live: bool,
+    pub service_mode: sw_core::config::ServiceMode,
+    pub poll_secs: u32,
     /// Sections currently ON at the collector, to diff against.
     pub sent_on: HashMap<Section, bool>,
     /// Last collection speed sent to this host (inactive host tabs run Hidden).
@@ -341,7 +381,8 @@ impl Default for HostUi {
             open: HashMap::from([("scheduled", false)]),
             dock_tab: DockTab::Logs,
             filter: LogFilter::default(),
-            services_live: true,
+            service_mode: sw_core::config::ServiceMode::Live,
+            poll_secs: 30,
             sent_on: HashMap::new(),
             sent_throttle: None,
         }

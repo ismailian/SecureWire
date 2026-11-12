@@ -91,6 +91,11 @@ pub(crate) async fn verify_sudo<H: client::Handler>(
 
 pub(crate) enum CollectorMsg {
     Rtt(u32),
+    /// A watched unit changed state (Live service mode).
+    UnitEvent,
+    WatcherEnded {
+        generation: u64,
+    },
     /// Monitoring bytes per second over the last window.
     Overhead(f64),
     Ended {
@@ -100,21 +105,40 @@ pub(crate) enum CollectorMsg {
 
 /// Start the collector channel. Frames are parsed on this (net) thread by the
 /// reader task; the UI receives ready-to-draw events, one wake-up per chunk.
+/// How to launch a collector.
+pub(crate) struct Launch {
+    pub throttle: Throttle,
+    pub privilege: collector::Priv,
+    pub password: Option<SecretString>,
+    pub generation: u64,
+    /// Shared clock for PING/PONG round-trip times.
+    pub clock: Instant,
+}
+
 pub(crate) async fn start_collector<H: client::Handler>(
     h: &Handle<H>,
-    throttle: Throttle,
-    generation: u64,
-    clock: Instant,
+    launch: Launch,
     emit: impl Fn(Vec<EventKind>) + Send + 'static,
     msgs: UnboundedSender<CollectorMsg>,
 ) -> Result<Writer, String> {
+    let Launch {
+        throttle,
+        privilege,
+        password,
+        generation,
+        clock,
+    } = launch;
     let ch = h.channel_open_session().await.map_err(|e| e.to_string())?;
-    ch.exec(false, collector::launch_command(throttle))
+    ch.exec(false, collector::launch_command(throttle, privilege))
         .await
         .map_err(|e| e.to_string())?;
     ch.data(collector::SCRIPT.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
+    if privilege == collector::Priv::Password {
+        let pw = password.ok_or("no sudo password held")?;
+        send_secret_line(&ch, &pw).await?;
+    }
     let (mut read, write) = ch.split();
     tokio::spawn(async move {
         let mut dec = FrameDecoder::new();
@@ -185,4 +209,80 @@ pub(crate) async fn send_line(w: &Writer, line: &str) {
     b.extend_from_slice(line.as_bytes());
     b.push(b'\n');
     let _ = w.data_bytes(b).await;
+}
+
+/// Write `secret\n` to a channel, wiping the temporary buffer afterwards.
+async fn send_secret_line<S>(ch: &russh::Channel<S>, secret: &SecretString) -> Result<(), String>
+where
+    S: From<(russh::ChannelId, ChannelMsg)> + Send + Sync + 'static,
+{
+    let mut line = Vec::with_capacity(secret.expose_secret().len() + 1);
+    line.extend_from_slice(secret.expose_secret().as_bytes());
+    line.push(b'\n');
+    let r = ch.data(&line[..]).await.map_err(|e| e.to_string());
+    line.iter_mut().for_each(|b| *b = 0);
+    r
+}
+
+/// One-shot command: optional secret line on stdin, then EOF. Returns stdout
+/// (capped) and the exit status. Used for the unit list, discovery and actions.
+pub(crate) async fn run_exec<H: client::Handler>(
+    h: &Handle<H>,
+    command: &str,
+    secret: Option<&SecretString>,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<(String, Option<u32>), String> {
+    let fut = async {
+        let mut ch = h.channel_open_session().await.map_err(|e| e.to_string())?;
+        ch.exec(false, command).await.map_err(|e| e.to_string())?;
+        if let Some(s) = secret {
+            send_secret_line(&ch, s).await?;
+        }
+        ch.eof().await.map_err(|e| e.to_string())?;
+        let (mut out, mut status) = (Vec::new(), None);
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                ChannelMsg::Data { data } if out.len() < max_bytes => out.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        out.truncate(max_bytes);
+        Ok((String::from_utf8_lossy(&out).into_owned(), status))
+    };
+    tokio::time::timeout(timeout, fut)
+        .await
+        .map_err(|_| "timed out".to_owned())?
+}
+
+/// Live service mode: follow systemd's messages about the watched units; every
+/// chunk of output becomes one `UnitEvent`.
+pub(crate) async fn start_unit_watcher<H: client::Handler>(
+    h: &Handle<H>,
+    command: String,
+    secret: Option<SecretString>,
+    generation: u64,
+    msgs: UnboundedSender<CollectorMsg>,
+) -> Result<Writer, String> {
+    let ch = h.channel_open_session().await.map_err(|e| e.to_string())?;
+    ch.exec(false, command).await.map_err(|e| e.to_string())?;
+    if let Some(s) = &secret {
+        send_secret_line(&ch, s).await?;
+    }
+    let (mut read, write) = ch.split();
+    tokio::spawn(async move {
+        while let Some(msg) = read.wait().await {
+            match msg {
+                ChannelMsg::Data { .. } => {
+                    let _ = msgs.send(CollectorMsg::UnitEvent);
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let _ = msgs.send(CollectorMsg::WatcherEnded { generation });
+    });
+    Ok(write)
 }

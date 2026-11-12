@@ -27,6 +27,16 @@ struct Run {
 impl Run {
     /// `tiers`: fast/medium/slow seconds.
     fn start(tag: &str, tiers: (u32, u32, u32)) -> Option<Run> {
+        Self::start_priv(tag, tiers, "none", None)
+    }
+
+    /// `privilege`: none | root | nopasswd | password; `password` is written after the script.
+    fn start_priv(
+        tag: &str,
+        tiers: (u32, u32, u32),
+        privilege: &str,
+        password: Option<&str>,
+    ) -> Option<Run> {
         let Some(host) = FakeHost::new(tag) else {
             eprintln!("SKIP: no bash found (set SW_TEST_BASH)");
             return None;
@@ -38,6 +48,7 @@ impl Run {
                 &tiers.0.to_string(),
                 &tiers.1.to_string(),
                 &tiers.2.to_string(),
+                privilege,
             ])
             .envs(host.env())
             .stdin(Stdio::piped())
@@ -47,6 +58,9 @@ impl Run {
             .expect("spawn bash");
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(SCRIPT.as_bytes()).unwrap();
+        if let Some(pw) = password {
+            writeln!(stdin, "{pw}").unwrap();
+        }
         let mut stdout = child.stdout.take().unwrap();
         let (tx, out) = channel();
         std::thread::spawn(move || {
@@ -294,4 +308,129 @@ fn missing_proc_files_report_err_not_crash() {
     // Still alive and answering.
     r.send("PING 7");
     r.until(5, |f| matches!(f, Frame::Pong(7)));
+}
+
+fn data_of(frames: &[Frame], s: Section) -> bool {
+    frames.iter().any(|f| is_data(f, s))
+}
+
+#[test]
+fn m3_sections_with_sudo_password() {
+    // Slow tier 1 s so every M3 section shows up quickly; auth has its own 300 s
+    // interval, so ask for it explicitly.
+    let Some(mut r) = Run::start_priv("m3", (1, 1, 1), "password", Some(fakehost::SUDO_PASSWORD))
+    else {
+        return;
+    };
+    r.send("NOW auth");
+    let mut frames = Vec::new();
+    for s in [
+        Section::Ports,
+        Section::Conns,
+        Section::Fw,
+        Section::F2b,
+        Section::Auth,
+        Section::Timers,
+    ] {
+        if !data_of(&frames, s) {
+            frames.extend(r.until(10, |f| is_data(f, s)));
+        }
+    }
+    let ev = r.events(frames);
+    let find = |pred: &dyn Fn(&EventKind) -> bool| ev.iter().any(pred);
+    assert!(find(
+        &|e| matches!(e, EventKind::Listeners(l) if l.len() == 4 && l.iter().any(|x| x.port == 6379))
+    ));
+    assert!(find(&|e| matches!(e, EventKind::Conns(c) if c.len() == 2)));
+    assert!(find(
+        &|e| matches!(e, EventKind::Firewall(f) if f.backend == "ufw" && f.active && f.rules.len() == 2)
+    ));
+    assert!(find(
+        &|e| matches!(e, EventKind::Jails(j) if j.len() == 1 && j[0].currently_banned == 2)
+    ));
+    assert!(find(
+        &|e| matches!(e, EventKind::Auth(a) if a.total() == 3 && a.top[0] == ("198.51.100.203".to_string(), 2))
+    ));
+    assert!(find(
+        &|e| matches!(e, EventKind::Scheduled(s) if s.timers[0].unit == "certbot.timer" && s.cron_jobs.len() == 1)
+    ));
+    // redis on 0.0.0.0:6379 with ufw denying incoming and no rule for it.
+    assert!(find(
+        &|e| matches!(e, EventKind::Alerts(a) if a.iter().any(|x| x.key == "listener:6379"))
+    ));
+}
+
+#[test]
+fn privileged_sections_need_sudo() {
+    // No privilege → fw/f2b report needs-sudo; a wrong password behaves the same way.
+    for (tag, privilege, pw) in [
+        ("nopriv", "none", None),
+        ("badpw", "password", Some("wrong")),
+    ] {
+        let Some(mut r) = Run::start_priv(tag, (1, 1, 1), privilege, pw) else {
+            return;
+        };
+        let frames = r.until(10, |f| {
+            matches!(
+                f,
+                Frame::Err {
+                    section: Section::F2b,
+                    ..
+                }
+            )
+        });
+        let code = |s: Section| {
+            frames.iter().find_map(|f| match f {
+                Frame::Err { section, code, .. } if *section == s => Some(code.clone()),
+                _ => None,
+            })
+        };
+        let fw = code(Section::Fw);
+        if privilege == "none" {
+            assert_eq!(fw.as_deref(), Some("needs-sudo"), "{tag}");
+            assert_eq!(code(Section::F2b).as_deref(), Some("needs-sudo"), "{tag}");
+        } else {
+            // sudo refuses the wrong password → both sections report an error, never empty data.
+            assert_eq!(fw.as_deref(), Some("unavailable"), "{tag}");
+            assert_eq!(code(Section::F2b).as_deref(), Some("unavailable"), "{tag}");
+            assert!(
+                !data_of(&frames, Section::Fw) && !data_of(&frames, Section::F2b),
+                "{tag}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_overrides_a_section_interval() {
+    let Some(mut r) = Run::start("every", (1, 60, 0)) else {
+        return;
+    };
+    r.send("SVC nginx.service");
+    r.until(5, |f| {
+        is_data(f, Section::Svc)
+            || matches!(
+                f,
+                Frame::Same {
+                    section: Section::Svc,
+                    ..
+                }
+            )
+    });
+    // Medium tier is 60 s; EVERY svc 1 makes it poll every second.
+    r.send("EVERY svc 1");
+    for _ in 0..2 {
+        r.until(5, |f| {
+            matches!(
+                f,
+                Frame::Same {
+                    section: Section::Svc,
+                    ..
+                } | Frame::Data {
+                    section: Section::Svc,
+                    ..
+                }
+            )
+        });
+    }
 }

@@ -11,7 +11,7 @@ use egui_phosphor::regular as ph;
 use parking_lot::Mutex;
 use sw_core::Section;
 use sw_core::alerts::Severity;
-use sw_core::config::{HostConfig, HostsFile};
+use sw_core::config::{HostConfig, HostsFile, ServiceMode};
 use sw_core::logs::sanitize;
 use sw_ssh::api::{
     AuthSpec, Command, ConnState, ConnectSpec, EventKind, HostId, KnownHosts, PtyId, Throttle,
@@ -40,6 +40,7 @@ struct HostEntry {
     next_pty: PtyId,
     key_prompt: Option<HostKeyPrompt>,
     sudo_prompt: Option<SudoPrompt>,
+    picker: crate::dialogs::ServicePicker,
     auth_prompt: Option<AuthPrompt>,
     last_error: Option<String>,
 }
@@ -183,6 +184,7 @@ impl SecureWireApp {
             next_pty: 1,
             key_prompt: None,
             sudo_prompt: None,
+            picker: Default::default(),
             auth_prompt: None,
             last_error: None,
         });
@@ -226,7 +228,51 @@ impl SecureWireApp {
         let name = config.name.clone();
         self.push_host(handle, &name, Some(config), false);
         if let Some(h) = self.hosts.last_mut() {
+            if let Some(c) = &h.config {
+                // The actor keeps these while offline and replays them onto every collector.
+                h.ui.service_mode = c.services.mode;
+                h.ui.poll_secs = c.services.poll_secs;
+                h.handle
+                    .send(Command::SetServices(c.services.units.clone()));
+                h.handle.send(Command::SetServiceMode {
+                    mode: c.services.mode,
+                    poll_secs: c.services.poll_secs,
+                });
+            }
             h.new_tab();
+        }
+    }
+
+    /// Apply and persist a host's watched services / status mode.
+    fn update_services(
+        &mut self,
+        idx: usize,
+        units: Option<Vec<String>>,
+        mode: ServiceMode,
+        poll_secs: u32,
+    ) {
+        let Some(h) = self.hosts.get_mut(idx) else {
+            return;
+        };
+        h.ui.service_mode = mode;
+        h.ui.poll_secs = poll_secs;
+        if let Some(u) = &units {
+            h.handle.send(Command::SetServices(u.clone()));
+        }
+        h.handle.send(Command::SetServiceMode { mode, poll_secs });
+        if mode == ServiceMode::Manual {
+            h.handle.send(Command::Now(Section::Svc));
+        }
+        let Some(c) = &mut h.config else { return };
+        if let Some(u) = units {
+            c.services.units = u;
+        }
+        c.services.mode = mode;
+        c.services.poll_secs = poll_secs;
+        let c = c.clone();
+        self.saved.upsert(c);
+        if let Err(e) = self.store.save_hosts(&self.saved) {
+            self.toast(format!("Could not save hosts.toml: {e}"));
         }
     }
 
@@ -387,13 +433,26 @@ impl SecureWireApp {
         for h in &mut self.hosts {
             let u = &h.ui;
             let left = |k| l.left && u.is_open(k);
-            let wanted: [(Section, bool); 8] = [
+            let right = |k| l.right && u.is_open(k);
+            let wanted: [(Section, bool); 14] = [
                 (Section::Mem, left("mem")),
                 (Section::Net, left("net")),
                 (Section::Df, left("disk")),
                 (Section::Dio, left("disk")),
                 (Section::Who, left("who")),
-                (Section::Svc, l.right && u.is_open("services")),
+                (
+                    Section::Svc,
+                    right("services") && u.service_mode != ServiceMode::Manual,
+                ),
+                (Section::Ports, left("net")),
+                (
+                    Section::Conns,
+                    l.bottom && u.dock_tab == DockTab::Connections,
+                ),
+                (Section::Fw, right("firewall")),
+                (Section::F2b, right("security")),
+                (Section::Auth, right("security")),
+                (Section::Timers, right("scheduled")),
                 (Section::Ps, l.bottom && u.dock_tab == DockTab::Processes),
                 (Section::Cpu, true),
             ];
@@ -422,6 +481,19 @@ impl SecureWireApp {
         let Some(h) = self.hosts.get_mut(self.active) else {
             return;
         };
+        if h.picker.open {
+            let (units, name) = (h.view.units.clone(), h.view.name.clone());
+            if let crate::dialogs::PickerOutcome::Apply {
+                units: u,
+                mode,
+                poll_secs,
+            } = h.picker.show(ctx, &units, &name)
+            {
+                let idx = self.active;
+                self.update_services(idx, Some(u), mode, poll_secs);
+            }
+            return;
+        }
         if let Some(p) = &mut h.key_prompt {
             if let Some(d) = p.show(ctx) {
                 h.handle.send(Command::HostKey(d));
@@ -621,6 +693,8 @@ impl eframe::App for SecureWireApp {
                     }
                 });
         }
+        let mut watch_action = watch::Action::None;
+        let mut set_live: Option<ServiceMode> = None;
         if self.layout.right {
             Panel::right("watch")
                 .resizable(true)
@@ -628,14 +702,34 @@ impl eframe::App for SecureWireApp {
                 .size_range(220.0..=520.0)
                 .frame(bar(BG1))
                 .show(ui, |ui| {
-                    if !h.demo {
-                        pending_panel(ui, "WATCH", "Services, firewall and security arrive in M3.");
-                    } else if let watch::Action::RefreshServices =
-                        watch::show(ui, &h.view, &mut h.ui)
-                    {
-                        h.handle.send(Command::Now(Section::Svc));
+                    if h.demo || h.view.probe.is_some() {
+                        let (mode, poll) = (h.ui.service_mode, h.ui.poll_secs);
+                        watch_action = watch::show(ui, &h.view, &mut h.ui, mode, poll);
+                    } else {
+                        pending_panel(ui, "WATCH", "Probing the host…");
                     }
                 });
+            match watch_action {
+                watch::Action::RefreshServices => h.handle.send(Command::Now(Section::Svc)),
+                watch::Action::OpenPicker => {
+                    let units = h
+                        .config
+                        .as_ref()
+                        .map(|c| c.services.units.clone())
+                        .unwrap_or_default();
+                    h.picker
+                        .open_with(&units, h.ui.service_mode, h.ui.poll_secs);
+                    h.handle.send(Command::ListUnits);
+                }
+                watch::Action::SetLive(on) => {
+                    set_live = Some(if on {
+                        ServiceMode::Live
+                    } else {
+                        ServiceMode::Manual
+                    });
+                }
+                watch::Action::None => {}
+            }
         }
         if self.layout.bottom {
             let max = (ui.available_height() - 200.0).max(120.0);
@@ -663,6 +757,7 @@ impl eframe::App for SecureWireApp {
         let pal = &self.palette;
         let mut term_focused = false;
         let modal_open = self.connect.open
+            || h.picker.open
             || h.key_prompt.is_some()
             || h.auth_prompt.is_some()
             || h.sudo_prompt.is_some();
@@ -722,6 +817,10 @@ impl eframe::App for SecureWireApp {
             }
         });
         self.term_focused = term_focused;
+        if let Some(mode) = set_live {
+            let (idx, poll) = (self.active, self.hosts[self.active].ui.poll_secs);
+            self.update_services(idx, None, mode, poll);
+        }
 
         self.sync_sections();
         self.dialogs(ui.ctx());

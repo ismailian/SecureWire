@@ -13,4 +13,5 @@ doctest = false
 [dependencies]
 memchr.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true

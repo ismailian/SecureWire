@@ -300,7 +300,33 @@ fn network(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
                 None,
             );
             ui.add_space(6.0);
-            ui.label(w::faint("LISTENING · arrives in M3"));
+            ui.label(w::faint("LISTENING"));
+            if v.listeners.is_empty() {
+                ui.label(w::faint("—"));
+            }
+            let fw = v
+                .firewall
+                .as_ref()
+                .filter(|f| f.active && matches!(f.incoming.as_str(), "deny" | "drop" | "reject"));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                for l in v.listeners.iter().take(24) {
+                    let name = if l.process.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", l.process)
+                    };
+                    let (text, color) = if !l.is_public() {
+                        (format!("{}:{}{name}", l.addr, l.port), TX3)
+                    } else if fw.is_some_and(|f| !f.allows_port(l.port)) {
+                        (format!("{}{name}", l.port), WARN)
+                    } else {
+                        (format!("{}{name}", l.port), TX1)
+                    };
+                    w::chip(ui, &text, color)
+                        .on_hover_text(format!("{} {}:{}", l.proto, l.addr, l.port));
+                }
+            });
         },
     );
 }

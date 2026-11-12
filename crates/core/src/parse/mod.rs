@@ -6,6 +6,7 @@ pub mod probe;
 pub mod proc;
 pub mod ps;
 pub mod systemctl;
+pub mod watch;
 pub mod who;
 
 pub use df::parse_df;
@@ -16,6 +17,9 @@ pub use proc::{
 };
 pub use ps::parse_ps;
 pub use systemctl::parse_systemctl_show;
+pub use watch::{
+    parse_auth, parse_conns, parse_f2b, parse_firewall, parse_listeners, parse_timers, parse_units,
+};
 pub use who::parse_who;
 
 /// Parse a decimal integer field, tolerating surrounding whitespace.

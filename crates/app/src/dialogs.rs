@@ -591,3 +591,224 @@ impl SudoPrompt {
         .unwrap_or(SudoOutcome::None)
     }
 }
+
+// ─────────────────────────────── Watched services ───────────────────────────────
+
+#[derive(Default)]
+pub struct ServicePicker {
+    pub open: bool,
+    filter: String,
+    selected: std::collections::BTreeSet<String>,
+    mode: sw_core::config::ServiceMode,
+    poll: String,
+}
+
+pub enum PickerOutcome {
+    None,
+    Apply {
+        units: Vec<String>,
+        mode: sw_core::config::ServiceMode,
+        poll_secs: u32,
+    },
+}
+
+impl ServicePicker {
+    pub fn open_with(
+        &mut self,
+        current: &[String],
+        mode: sw_core::config::ServiceMode,
+        poll_secs: u32,
+    ) {
+        *self = Self {
+            open: true,
+            filter: String::new(),
+            selected: current.iter().cloned().collect(),
+            mode,
+            poll: poll_secs.to_string(),
+        };
+    }
+
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        units: &[sw_core::model::UnitInfo],
+        host: &str,
+    ) -> PickerOutcome {
+        use sw_core::config::ServiceMode;
+        if !self.open {
+            return PickerOutcome::None;
+        }
+        let mut out = PickerOutcome::None;
+        let mut close = false;
+        modal(
+            ctx,
+            "services",
+            &format!("Watched services — {host}"),
+            ph::GEAR_FINE,
+            600.0,
+            |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.filter)
+                        .hint_text(format!(
+                            "{} Filter {} units…",
+                            ph::MAGNIFYING_GLASS,
+                            units.len()
+                        ))
+                        .desired_width(f32::INFINITY),
+                );
+                let q = self.filter.to_ascii_lowercase();
+                // Units from the host, plus watched ones the host didn't list (e.g. not loaded right now).
+                let mut rows: Vec<(String, String, String)> = units
+                    .iter()
+                    .map(|u| (u.name.clone(), u.active.clone(), u.description.clone()))
+                    .collect();
+                for s in &self.selected {
+                    if !rows.iter().any(|r| &r.0 == s) {
+                        rows.push((s.clone(), "unknown".into(), String::new()));
+                    }
+                }
+                // Watched first, then failed, then by name.
+                rows.sort_by_key(|r| (!self.selected.contains(&r.0), r.1 != "failed", r.0.clone()));
+                rows.retain(|r| {
+                    q.is_empty()
+                        || r.0.to_ascii_lowercase().contains(&q)
+                        || r.2.to_ascii_lowercase().contains(&q)
+                });
+                if units.is_empty() {
+                    ui.label(w::faint("Loading the unit list from the host…"));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, 30.0, rows.len(), |ui, range| {
+                        for (name, active, desc) in &rows[range] {
+                            let on = self.selected.contains(name);
+                            let (r, resp) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 28.0),
+                                egui::Sense::click(),
+                            );
+                            let p = ui.painter();
+                            if on {
+                                p.rect_filled(r, 3, ACC_DIM);
+                            } else if resp.hovered() {
+                                p.rect_filled(r, 3, BG2);
+                            }
+                            let cb = egui::Rect::from_center_size(
+                                egui::pos2(r.left() + 14.0, r.center().y),
+                                vec2(13.0, 13.0),
+                            );
+                            p.rect_stroke(
+                                cb,
+                                3,
+                                egui::Stroke::new(1.0, if on { ACC } else { LINE2 }),
+                                egui::StrokeKind::Inside,
+                            );
+                            if on {
+                                p.text(
+                                    cb.center(),
+                                    Align2::CENTER_CENTER,
+                                    ph::CHECK,
+                                    crate::theme::prop(11.0),
+                                    ACC,
+                                );
+                            }
+                            p.text(
+                                egui::pos2(r.left() + 30.0, r.center().y),
+                                Align2::LEFT_CENTER,
+                                name,
+                                crate::theme::mono(12.0),
+                                TX0,
+                            );
+                            let (fg, label) = match active.as_str() {
+                                "active" => (OK, "active"),
+                                "failed" => (ERR, "failed"),
+                                "inactive" => (TX3, "inactive"),
+                                _ => (TX3, active.as_str()),
+                            };
+                            p.text(
+                                egui::pos2(r.right() - 8.0, r.center().y),
+                                Align2::RIGHT_CENTER,
+                                label,
+                                crate::theme::prop(10.5),
+                                fg,
+                            );
+                            if !desc.is_empty() {
+                                let d: String = desc.chars().take(40).collect();
+                                p.text(
+                                    egui::pos2(r.left() + 250.0, r.center().y),
+                                    Align2::LEFT_CENTER,
+                                    d,
+                                    crate::theme::prop(11.0),
+                                    TX3,
+                                );
+                            }
+                            if resp.clicked() {
+                                if on {
+                                    self.selected.remove(name);
+                                } else {
+                                    self.selected.insert(name.clone());
+                                }
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
+                field(ui, "Status updates", |ui| {
+                    segmented(
+                        ui,
+                        &mut self.mode,
+                        &[
+                            (ServiceMode::Live, "Live (event-driven)"),
+                            (ServiceMode::Poll, "Poll"),
+                            (ServiceMode::Manual, "Manual"),
+                        ],
+                    );
+                    if self.mode == ServiceMode::Poll {
+                        ui.add(TextEdit::singleline(&mut self.poll).desired_width(40.0));
+                        ui.label(w::dim("s"));
+                    }
+                });
+                let cost = match self.mode {
+                    ServiceMode::Live => {
+                        "Follows systemd's own journal messages about these units on the same connection — near-zero cost while nothing changes. Memory/CPU per service still refresh every 10 s."
+                    }
+                    ServiceMode::Poll => {
+                        "One batched `systemctl show` for all watched units per interval."
+                    }
+                    ServiceMode::Manual => {
+                        "Status only when you open the section or press refresh. Zero background cost."
+                    }
+                };
+                ui.label(w::faint(cost));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(w::faint(format!(
+                        "{} watched · saved per host in hosts.toml",
+                        self.selected.len()
+                    )));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new("Apply").color(BG0)).fill(ACC))
+                            .clicked()
+                        {
+                            out = PickerOutcome::Apply {
+                                units: self.selected.iter().cloned().collect(),
+                                mode: self.mode,
+                                poll_secs: self.poll.trim().parse().unwrap_or(30).clamp(5, 3600),
+                            };
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            },
+        );
+        if close {
+            self.open = false;
+        }
+        out
+    }
+}

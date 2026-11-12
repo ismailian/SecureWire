@@ -17,14 +17,21 @@ sw_init() {
     F=${2:-2}
     M=${3:-10}
     S=${4:-60}
+    # Privilege for root-only sections (protocol §9): none | root | nopasswd | password.
+    PRIV=${5:-none}
+    # Root tools live in sbin, which non-root PATHs often lack.
+    PATH=$PATH:/usr/sbin:/sbin
     seq=0
     SVC=()
-    SECTIONS=(cpu mem net dio df who ps svc)
-    declare -gA ON PREV DUE TIER KNOWN
+    SECTIONS=(cpu mem net dio df who ps svc ports conns fw f2b auth timers)
+    declare -gA ON PREV DUE TIER KNOWN EVERY
     local s
     for s in static "${SECTIONS[@]}"; do KNOWN[$s]=1; ON[$s]=1; DUE[$s]=0; done
     for s in cpu mem net dio; do TIER[$s]=fast; done
     for s in df who ps svc; do TIER[$s]=medium; done
+    for s in ports conns fw f2b timers; do TIER[$s]=slow; done
+    TIER[auth]=slow
+    EVERY[auth]=300
     TIER[static]=never
 }
 
@@ -111,6 +118,96 @@ s_svc() {
     frame svc "$(systemctl show -p Id,ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,TasksCurrent,NRestarts,Result,ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic -- "${SVC[@]}" 2>&1)" 1
 }
 
+# ---------- slow tier (M3) ----------
+
+# sudo_run <cmd...>: run privileged. The password (PRIV=password) goes through a
+# builtin printf into sudo -S, so it never appears in any argv or environment.
+sudo_run() {
+    case $PRIV in
+        root) "$@" ;;
+        nopasswd) sudo -n -- "$@" ;;
+        password) printf "%s\n" "$SWPW" | sudo -S -p "" -- "$@" ;;
+        *) return 126 ;;
+    esac
+}
+
+can_priv() { [[ $PRIV == root || $PRIV == nopasswd || $PRIV == password ]]; }
+
+s_ports() {
+    have ss || { missing ports; return; }
+    # Process names of other users need root; no sudo here (one log line per tick is not worth it).
+    if [[ $PRIV == root ]]; then
+        frame ports "$(ss -Htlnup 2>/dev/null)" 1
+    else
+        frame ports "$(ss -Htlnu 2>/dev/null)" 1
+    fi
+}
+
+s_conns() {
+    have ss || { missing conns; return; }
+    frame conns "$(ss -Htnp state established 2>/dev/null | head -n 300)" 1
+}
+
+s_fw() {
+    can_priv || { missing fw needs-sudo; return; }
+    local out ufw_out=
+    if have ufw && ufw_out=$(sudo_run ufw status verbose 2>/dev/null) && [[ $ufw_out == *"Status: active"* ]]; then
+        frame fw "backend ufw$NL$ufw_out" 1
+        return
+    fi
+    if have nft && out=$(sudo_run nft list ruleset 2>/dev/null) && [[ $out == *chain* ]]; then
+        frame fw "backend nftables$NL$out" 1
+        return
+    fi
+    if have iptables && out=$(sudo_run iptables -S 2>/dev/null) && [[ -n $out ]]; then
+        frame fw "backend iptables$NL$out" 1
+        return
+    fi
+    if [[ -n $ufw_out ]]; then
+        frame fw "backend ufw$NL$ufw_out" 1
+        return
+    fi
+    # Tools missing, or sudo refused.
+    missing fw unavailable
+}
+
+s_f2b() {
+    have fail2ban-client || { missing f2b; return; }
+    can_priv || { missing f2b needs-sudo; return; }
+    # One sudo call per tick for all jails. A refused sudo is an error, not "no jails".
+    local out
+    out=$(sudo_run sh -c 'fail2ban-client status; for j in $(fail2ban-client status | sed -n "s/.*Jail list:[[:space:]]*//p" | tr "," " "); do echo "@@jail $j"; fail2ban-client status "$j"; done' 2>/dev/null) || { missing f2b unavailable; return; }
+    frame f2b "$out" 1
+}
+
+s_auth() {
+    have journalctl || { missing auth; return; }
+    local src now
+    printf -v now "%(%s)T" -1
+    src=$(journalctl _COMM=sshd --since "24 hours ago" -o short-unix --no-pager -q 2>/dev/null)
+    if [[ -z $src ]] && can_priv; then
+        src=$(sudo_run journalctl _COMM=sshd --since "24 hours ago" -o short-unix --no-pager -q 2>/dev/null)
+    fi
+    local pat="Failed password|Invalid user|authentication failure"
+    frame auth "$(
+        printf "%s\n" "$src" | awk -v now="$now" -v pat="$pat" '
+            $0 ~ pat { b = int((now - $1) / 1800); if (b >= 0 && b < 48) c[47 - b]++ }
+            END { for (i = 0; i < 48; i++) printf "%d%s", c[i] + 0, (i < 47 ? " " : "\n") }'
+        printf "%s\n" "$src" | awk -v pat="$pat" '
+            $0 ~ pat { for (i = 1; i < NF; i++) if ($i == "from") n[$(i + 1)]++ }
+            END { for (k in n) print n[k], k }' | sort -rn | head -n 10
+    )" 1
+}
+
+s_timers() {
+    have systemctl || { missing timers; return; }
+    local now t
+    printf -v now "%(%s)T" -1
+    t=$(systemctl list-timers --all --no-pager -o json 2>/dev/null)
+    [[ $t == "["* ]] || t=$(systemctl list-timers --all --no-pager --no-legend 2>/dev/null)
+    frame timers "now $now$NL$t$NL@@cron$NL$(crontab -l 2>/dev/null)" 1
+}
+
 # ---------- once ----------
 
 s_static() {
@@ -153,6 +250,12 @@ handle() {
         ON) [[ ${KNOWN[$a]} == 1 ]] && { ON[$a]=1; DUE[$a]=0; } ;;
         OFF) [[ ${KNOWN[$a]} == 1 ]] && ON[$a]=0 ;;
         NOW) [[ ${KNOWN[$a]} == 1 ]] && "s_$a" ;;
+        EVERY)
+            # EVERY <section> <secs>: per-section interval (service poll mode); 0 = back to its tier.
+            [[ ${KNOWN[$a]} == 1 && $b =~ ^[0-9]+$ ]] || return
+            if ((b > 0)); then EVERY[$a]=$b; else unset "EVERY[$a]"; fi
+            DUE[$a]=0
+            ;;
         SVC)
             local u ok=() words
             set -f # no glob expansion of unit names
@@ -169,6 +272,10 @@ handle() {
 }
 
 interval() {
+    if [[ -n ${EVERY[$1]} ]]; then
+        IV=${EVERY[$1]}
+        return
+    fi
     case ${TIER[$1]} in
         fast) IV=$F ;;
         medium) IV=$M ;;
@@ -179,6 +286,11 @@ interval() {
 
 main() {
     sw_init "$@"
+    # With PRIV=password the first stdin line after this script is the sudo password.
+    # It stays in this shell's memory: never exported, never in argv.
+    if [[ $PRIV == password ]]; then
+        IFS= read -r SWPW || exit 0
+    fi
     printf "%sHELLO 1 %s\n" "$RS" "$BASH_VERSION"
     s_static
     local s now next wait line rc

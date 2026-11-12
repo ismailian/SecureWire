@@ -223,7 +223,7 @@ pub fn demo_screen(ui: &mut Ui, host: &str, user: &str) {
     let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
     ui.painter().rect_filled(strip, 0, BG1);
     let g = ui.painter().layout_no_wrap(
-        format!("{}  {user}@{host} (demo)", ph::TERMINAL_WINDOW),
+        format!("{}  {user}@{host}", ph::TERMINAL_WINDOW),
         theme::prop(12.5),
         TX0,
     );

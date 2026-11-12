@@ -319,7 +319,101 @@ impl FakeServer {
                     );
                 }
             }
-            _ => {}
+            Section::Ports => {
+                o.push_str(
+                    "tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=812,fd=3))
+",
+                );
+                o.push_str(
+                    "tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=1123,fd=6))
+",
+                );
+                o.push_str(
+                    "tcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=1123,fd=7))
+",
+                );
+                o.push_str(
+                    "tcp LISTEN 0 80 127.0.0.1:3306 0.0.0.0:* users:((\"mysqld\",pid=1342,fd=21))
+",
+                );
+                o.push_str("tcp LISTEN 0 511 127.0.0.1:9000 0.0.0.0:* users:((\"php-fpm8.3\",pid=2201,fd=8))
+");
+                o.push_str("tcp LISTEN 0 511 0.0.0.0:6379 0.0.0.0:* users:((\"redis-server\",pid=99001,fd=6))");
+            }
+            Section::Conns => {
+                o.push_str(
+                    "0 0 203.0.113.10:22 198.51.100.24:50412 users:((\"sshd\",pid=88123,fd=4))
+",
+                );
+                o.push_str(
+                    "0 0 203.0.113.10:443 192.0.2.77:61022 users:((\"nginx\",pid=1123,fd=12))
+",
+                );
+                o.push_str(
+                    "0 0 127.0.0.1:3306 127.0.0.1:44120 users:((\"mysqld\",pid=1342,fd=40))",
+                );
+            }
+            Section::Fw => {
+                o.push_str(
+                    "backend ufw
+Status: active
+Default: deny (incoming), allow (outgoing), disabled (routed)
+
+To                         Action      From
+--                         ------      ----
+",
+                );
+                o.push_str(
+                    "22/tcp                     ALLOW IN    Anywhere
+80,443/tcp                 ALLOW IN    Anywhere
+3306                       ALLOW IN    10.0.0.0/24
+22/tcp (v6)                ALLOW IN    Anywhere (v6)",
+                );
+            }
+            Section::F2b => {
+                o.push_str(
+                    "Status
+`- Jail list:	nginx-http-auth, sshd
+@@jail sshd
+|  |- Currently failed:	3
+|  |- Total failed:	1284
+   |- Currently banned:	14
+   |- Total banned:	102
+   `- Banned IP list:	198.51.100.203 192.0.2.155
+",
+                );
+                o.push_str(
+                    "@@jail nginx-http-auth
+   |- Currently banned:	3
+   `- Banned IP list:	203.0.113.199",
+                );
+            }
+            Section::Auth => {
+                let b: Vec<String> = (0..48)
+                    .map(|i| {
+                        (20.0
+                            + 30.0 * ((i as f64) / 4.0).sin().max(0.0)
+                            + self.rng.range(0.0, 25.0))
+                        .round()
+                        .to_string()
+                    })
+                    .collect();
+                o.push_str(&b.join(" "));
+                o.push_str(
+                    "
+412 198.51.100.203
+288 192.0.2.155
+97 203.0.113.199
+41 198.51.100.88",
+                );
+            }
+            Section::Timers => {
+                o.push_str("now 1000000
+[{\"next\":1021600000000,\"last\":979400000000,\"unit\":\"certbot.timer\",\"activates\":\"certbot.service\"},{\"next\":1003000000000,\"last\":999000000000,\"unit\":\"logrotate.timer\",\"activates\":\"logrotate.service\"},{\"next\":1086400000000,\"last\":0,\"unit\":\"apt-daily.timer\",\"activates\":\"apt-daily.service\"}]
+@@cron
+*/5 * * * * /usr/local/bin/backup.sh
+0 3 * * 0 /usr/bin/certbot renew --quiet");
+            }
         }
         o
     }
@@ -443,7 +537,18 @@ impl DemoHost {
                     next: now,
                 },
                 Tier {
-                    sections: &[Section::Df, Section::Who, Section::Ps, Section::Svc],
+                    sections: &[
+                        Section::Df,
+                        Section::Who,
+                        Section::Ps,
+                        Section::Svc,
+                        Section::Ports,
+                        Section::Conns,
+                        Section::Fw,
+                        Section::F2b,
+                        Section::Auth,
+                        Section::Timers,
+                    ],
                     every: 10,
                     next: now,
                 },
@@ -511,6 +616,7 @@ impl DemoHost {
                 sudo: SudoMode::Root,
             }),
             EventKind::State(ConnState::Connected),
+            EventKind::ServiceMode { live_watching: true },
             EventKind::LogSources(
                 LOG_SOURCES
                     .iter()
@@ -704,6 +810,12 @@ mod tests {
                 Section::Who,
                 Section::Ps,
                 Section::Svc,
+                Section::Ports,
+                Section::Conns,
+                Section::Fw,
+                Section::F2b,
+                Section::Auth,
+                Section::Timers,
             ] {
                 let mut frames = Vec::new();
                 dec.push(
@@ -736,6 +848,20 @@ mod tests {
         assert!(has(
             |e| matches!(e, EventKind::Static(h) if h.cpus == CORES as u32)
         ));
-        assert!(has(|e| matches!(e, EventKind::Alerts(a) if a.len() == 2)));
+        assert!(has(
+            |e| matches!(e, EventKind::Firewall(f) if f.active && f.rules.len() == 4)
+        ));
+        assert!(has(|e| matches!(e, EventKind::Jails(j) if j.len() == 2)));
+        assert!(has(
+            |e| matches!(e, EventKind::Auth(a) if a.buckets.len() == 48)
+        ));
+        assert!(has(
+            |e| matches!(e, EventKind::Scheduled(s) if s.timers.len() == 3)
+        ));
+        assert!(has(
+            |e| matches!(e, EventKind::Listeners(l) if l.len() == 6)
+        ));
+        // disk 85 %, failed redis, and redis on a public port without a ufw rule.
+        assert!(has(|e| matches!(e, EventKind::Alerts(a) if a.len() == 3)));
     }
 }

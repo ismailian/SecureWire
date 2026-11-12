@@ -23,8 +23,9 @@ use crate::api::{
     AuthSpec, Command, ConnInfo, ConnState, ConnectSpec, Event, EventKind, HostId, HostKeyStatus,
     KeyDecision, PtyId, SudoMode, Throttle,
 };
-use crate::collector;
+use crate::collector::{self, Priv};
 use crate::remote::{self, CollectorMsg};
+use sw_core::config::ServiceMode;
 
 const BACKOFF: [u32; 6] = [1, 2, 4, 8, 16, 30];
 const TERM_NAME: &str = "xterm-256color";
@@ -336,6 +337,11 @@ enum Internal {
         generation: u64,
         result: Result<remote::Writer, String>,
     },
+    WatcherStarted {
+        generation: u64,
+        result: Result<remote::Writer, String>,
+    },
+    Units(Result<Vec<sw_core::model::UnitInfo>, String>),
 }
 
 struct Pty {
@@ -382,6 +388,14 @@ pub(crate) struct Actor {
     sudo_attempts: u8,
     sudo_checking: bool,
     sudo_skipped: bool,
+    // ---- M3: privilege the collector runs with, service status mode ----
+    handle: Option<Arc<Handle<Client>>>,
+    collector_priv: Priv,
+    service_mode: ServiceMode,
+    poll_secs: u32,
+    watcher: Option<remote::Writer>,
+    watcher_gen: u64,
+    last_unit_now: Option<Instant>,
 }
 
 impl Actor {
@@ -421,6 +435,13 @@ impl Actor {
             sudo_attempts: 0,
             sudo_checking: false,
             sudo_skipped: false,
+            handle: None,
+            collector_priv: Priv::None,
+            service_mode: ServiceMode::Live,
+            poll_secs: 30,
+            watcher: None,
+            watcher_gen: 0,
+            last_unit_now: None,
         }
     }
 
@@ -463,7 +484,13 @@ impl Actor {
                 self.services = u;
                 None
             }
+            Command::SetServiceMode { mode, poll_secs } => {
+                self.service_mode = mode;
+                self.poll_secs = poll_secs.max(5);
+                None
+            }
             // Meaningless without a connection.
+            Command::ListUnits => None,
             Command::Now(_)
             | Command::PtyInput { .. }
             | Command::PtyResize { .. }
@@ -726,6 +753,7 @@ impl Actor {
 
     async fn session(&mut self, handle: Handle<Client>) -> End {
         let handle = Arc::new(handle);
+        self.handle = Some(handle.clone());
         let (algorithm, fingerprint, key_known) = self.keys.lock().seen.clone().unwrap_or_default();
         self.emit(EventKind::Connected(ConnInfo {
             user: self.spec.user.clone(),
@@ -800,11 +828,18 @@ impl Actor {
                             self.services = u;
                             let l = collector::svc(&self.services);
                             self.coll_line(&l).await;
+                            self.apply_service_mode().await;
                         }
+                        Command::SetServiceMode { mode, poll_secs } => {
+                            self.service_mode = mode;
+                            self.poll_secs = poll_secs.max(5);
+                            self.apply_service_mode().await;
+                        }
+                        Command::ListUnits => self.list_units(),
                         Command::SudoPassword(Some(pw)) => self.check_sudo(&handle, pw),
                         Command::SudoPassword(None) => {
                             self.sudo_skipped = true;
-                            self.set_sudo(SudoMode::None);
+                            self.set_sudo(SudoMode::None).await;
                         }
                         Command::SudoAsk => {
                             self.sudo_skipped = false;
@@ -840,11 +875,25 @@ impl Actor {
                             self.emit_link();
                         }
                     }
-                    Some(Internal::Probed(Ok(p))) => self.on_probe(&handle, p),
+                    Some(Internal::Probed(Ok(p))) => self.on_probe(p).await,
                     Some(Internal::Probed(Err(e))) => {
                         self.emit(EventKind::Error(format!("Host probe failed ({e}) — live metrics are off")));
                     }
-                    Some(Internal::SudoChecked { password, result }) => self.on_sudo_checked(password, result),
+                    Some(Internal::SudoChecked { password, result }) => self.on_sudo_checked(password, result).await,
+                    Some(Internal::WatcherStarted { generation, result }) => {
+                        if generation == self.watcher_gen {
+                            match result {
+                                Ok(w) => {
+                                    self.watcher = Some(w);
+                                    self.emit(EventKind::ServiceMode { live_watching: true });
+                                    self.emit_link();
+                                }
+                                Err(_) => self.watch_fallback().await,
+                            }
+                        }
+                    }
+                    Some(Internal::Units(Ok(u))) => self.emit(EventKind::Units(u)),
+                    Some(Internal::Units(Err(e))) => self.emit(EventKind::Error(format!("Could not list units: {e}"))),
                     Some(Internal::CollectorStarted { generation, result }) => {
                         if generation == self.collector_gen {
                             match result {
@@ -861,6 +910,12 @@ impl Actor {
                                     remote::send_line(&w, &collector::ping(self.clock.elapsed().as_millis() as u64)).await;
                                     self.collector = Some(w);
                                     self.emit_link();
+                                    // sudo became available while this collector was starting → relaunch with it.
+                                    if Priv::from_sudo(self.sudo_mode) != self.collector_priv {
+                                        self.spawn_collector().await;
+                                    } else {
+                                        self.apply_service_mode().await;
+                                    }
                                 }
                                 Err(e) => self.emit(EventKind::Error(format!("Could not start the collector: {e}"))),
                             }
@@ -884,6 +939,18 @@ impl Actor {
                         self.emit_link();
                         if !handle.is_closed() {
                             self.emit(EventKind::Error("Live metrics stopped: the collector exited".into()));
+                        }
+                    }
+                    Some(CollectorMsg::UnitEvent) => {
+                        // A watched unit changed: refresh now, at most once a second.
+                        if self.last_unit_now.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                            self.last_unit_now = Some(Instant::now());
+                            self.coll_line(&collector::now(Section::Svc)).await;
+                        }
+                    }
+                    Some(CollectorMsg::WatcherEnded { generation }) => {
+                        if generation == self.watcher_gen && self.watcher.take().is_some() && !handle.is_closed() {
+                            self.watch_fallback().await;
                         }
                     }
                     // A collector from an earlier session, or already gone.
@@ -910,7 +977,7 @@ impl Actor {
         }
     }
 
-    fn on_probe(&mut self, handle: &Arc<Handle<Client>>, p: Probe) {
+    async fn on_probe(&mut self, p: Probe) {
         self.emit(EventKind::Probe(p.clone()));
         let mode = if p.is_root() {
             SudoMode::Root
@@ -923,26 +990,124 @@ impl Actor {
         };
         let has_bash = p.bash.is_some();
         self.probe = Some(p);
-        self.set_sudo(mode);
+        self.sudo_mode = mode;
+        self.emit(EventKind::Sudo(mode));
         self.ask_sudo(false);
-
         if !has_bash {
             self.emit(EventKind::Error(
                 "bash is not installed on this host — live metrics need bash".into(),
             ));
             return;
         }
+        self.spawn_collector().await;
+    }
+
+    /// (Re)start the collector with the current privilege. An older collector is told to quit.
+    async fn spawn_collector(&mut self) {
+        let Some(h) = self.handle.clone() else { return };
+        if !self.probe.as_ref().is_some_and(|p| p.bash.is_some()) {
+            return;
+        }
+        if let Some(old) = self.collector.take() {
+            remote::send_line(&old, "QUIT").await;
+            let _ = old.close().await;
+        }
+        self.collector_gen += 1;
         let generation = self.collector_gen;
-        let (h, tx, msgs) = (
-            handle.clone(),
-            self.internal_tx.clone(),
-            self.coll_tx.clone(),
-        );
+        let privilege = Priv::from_sudo(self.sudo_mode);
+        self.collector_priv = privilege;
+        let password = if privilege == Priv::Password {
+            self.sudo_password.clone()
+        } else {
+            None
+        };
+        let (tx, msgs) = (self.internal_tx.clone(), self.coll_tx.clone());
         let (throttle, clock, shared) = (self.throttle, self.clock, self.shared.clone());
         tokio::spawn(async move {
             let emit = move |evs: Vec<EventKind>| shared.emit_batch(evs);
-            let result = remote::start_collector(&h, throttle, generation, clock, emit, msgs).await;
+            let launch = remote::Launch {
+                throttle,
+                privilege,
+                password,
+                generation,
+                clock,
+            };
+            let result = remote::start_collector(&h, launch, emit, msgs).await;
             let _ = tx.send(Internal::CollectorStarted { generation, result });
+        });
+    }
+
+    /// Apply Live / Poll / Manual to the collector and the unit watcher (protocol §3).
+    async fn apply_service_mode(&mut self) {
+        if let Some(w) = self.watcher.take() {
+            let _ = w.close().await;
+        }
+        self.watcher_gen += 1;
+        self.emit_link();
+        match self.service_mode {
+            ServiceMode::Poll => {
+                self.coll_line(&collector::every(Section::Svc, self.poll_secs))
+                    .await;
+                self.emit(EventKind::ServiceMode {
+                    live_watching: false,
+                });
+            }
+            ServiceMode::Manual => {
+                self.coll_line(&collector::every(Section::Svc, 0)).await;
+                self.emit(EventKind::ServiceMode {
+                    live_watching: false,
+                });
+            }
+            ServiceMode::Live => {
+                self.coll_line(&collector::every(Section::Svc, 0)).await;
+                let Some(h) = self.handle.clone() else { return };
+                let journal_ok = self.probe.as_ref().is_some_and(|p| p.journal_read);
+                let (prefix, secret) = match (journal_ok, self.sudo_mode) {
+                    (true, _) | (false, SudoMode::Root) => ("", None),
+                    (false, SudoMode::NoPasswd) => ("sudo -n ", None),
+                    (false, SudoMode::Password) => ("sudo -S -p \"\" ", self.sudo_password.clone()),
+                    _ => return self.watch_fallback().await,
+                };
+                let Some(cmd) = collector::unit_watch_command(&self.services, prefix) else {
+                    return; // nothing watched yet
+                };
+                let (generation, tx, msgs) = (
+                    self.watcher_gen,
+                    self.internal_tx.clone(),
+                    self.coll_tx.clone(),
+                );
+                tokio::spawn(async move {
+                    let result =
+                        remote::start_unit_watcher(&h, cmd, secret, generation, msgs).await;
+                    let _ = tx.send(Internal::WatcherStarted { generation, result });
+                });
+            }
+        }
+    }
+
+    /// Live mode without journal access: poll quickly instead (shown as "LIVE · POLLING").
+    async fn watch_fallback(&mut self) {
+        self.coll_line(&collector::every(Section::Svc, 5)).await;
+        self.emit(EventKind::ServiceMode {
+            live_watching: false,
+        });
+        self.emit_link();
+    }
+
+    fn list_units(&self) {
+        let Some(h) = self.handle.clone() else { return };
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let r = remote::run_exec(
+                &h,
+                collector::LIST_UNITS_COMMAND,
+                None,
+                Duration::from_secs(20),
+                1 << 20,
+            )
+            .await
+            .map(|(out, _)| sw_core::parse::parse_units(&out));
+            let _ = tx.send(Internal::Units(r));
         });
     }
 
@@ -981,18 +1146,18 @@ impl Actor {
         });
     }
 
-    fn on_sudo_checked(&mut self, password: SecretString, result: Result<bool, String>) {
+    async fn on_sudo_checked(&mut self, password: SecretString, result: Result<bool, String>) {
         self.sudo_checking = false;
         match result {
             Ok(true) => {
                 self.sudo_password = Some(password);
                 self.sudo_attempts = 0;
-                self.set_sudo(SudoMode::Password);
+                self.set_sudo(SudoMode::Password).await;
             }
             Ok(false) => {
                 self.sudo_attempts += 1;
                 if self.sudo_attempts >= SUDO_ATTEMPTS {
-                    self.set_sudo(SudoMode::None);
+                    self.set_sudo(SudoMode::None).await;
                     self.emit(EventKind::Error(
                         "sudo rejected the password 3 times — privileged panels stay off (retry from the status bar)".into(),
                     ));
@@ -1004,7 +1169,7 @@ impl Actor {
                 }
             }
             Err(e) => {
-                self.set_sudo(SudoMode::None);
+                self.set_sudo(SudoMode::None).await;
                 self.emit(EventKind::Error(format!(
                     "Could not check the sudo password: {e}"
                 )));
@@ -1012,9 +1177,13 @@ impl Actor {
         }
     }
 
-    fn set_sudo(&mut self, mode: SudoMode) {
+    /// New privilege → relaunch the collector (root-only sections) and the unit watcher.
+    async fn set_sudo(&mut self, mode: SudoMode) {
         self.sudo_mode = mode;
         self.emit(EventKind::Sudo(mode));
+        if self.collector.is_some() && Priv::from_sudo(mode) != self.collector_priv {
+            self.spawn_collector().await;
+        }
     }
 
     /// Connection gone: drop channel writers; stale reader messages are ignored by generation.
@@ -1024,6 +1193,9 @@ impl Actor {
         }
         self.collector = None;
         self.collector_gen += 1;
+        self.watcher = None;
+        self.watcher_gen += 1;
+        self.handle = None;
         self.link.rtt_ms = None;
         self.link.overhead_bps = 0.0;
         self.emit_link();
@@ -1033,7 +1205,9 @@ impl Actor {
     fn emit_link(&self) {
         let ptys = self.ptys.values().filter(|p| p.writer.is_some()).count() as u32;
         self.emit(EventKind::Link(LinkStats {
-            channels: ptys + u32::from(self.collector.is_some()),
+            channels: ptys
+                + u32::from(self.collector.is_some())
+                + u32::from(self.watcher.is_some()),
             ..self.link
         }));
     }

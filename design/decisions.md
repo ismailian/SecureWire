@@ -107,3 +107,11 @@ Format: **context → decision → consequences**.
 ### D-024 · Coalesce collector packets before waking the UI
 - **Context:** Measured ~2.5 repaints/s with a 2 s tier — bash writes each section as a separate SSH packet, one wake each. Client CPU 1.15 %.
 - **Decision:** The reader collects packets arriving within 30 ms and emits them as one batch. Result: ~1.3 repaints/s, client CPU 0.78 % with live metrics (budget < 1 %).
+
+### D-025 · Privileged reads accept sudo's log lines, but keep them few
+- **Context:** Every `sudo` call is logged on the server. Reading the firewall and fail2ban every 60 s therefore adds log lines.
+- **Decision:** One sudo call per section per tick (fail2ban jails batched into one `sudo sh -c`), only while the section is open; `ports` never uses sudo (process names only as root); `auth` uses sudo only when the journal isn't readable, every 5 minutes.
+- **Consequences:** ≈ 2 sudo log lines per minute with Firewall and Security open. Documented in the protocol (§11).
+
+### D-026 · Live service status = journal match on PID 1's messages about the units
+- **Decision:** `journalctl -f -n 0 _PID=1 UNIT=…` on its own channel; output only triggers `NOW svc`, it isn't parsed. Without journal access and without sudo it degrades to a 5 s poll, shown in the UI.

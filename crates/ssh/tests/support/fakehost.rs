@@ -144,47 +144,127 @@ impl FakeHost {
         };
         stub(
             "df",
-            "echo \"Filesystem 1-blocks Used Available Capacity Mounted on\"\n\
-             echo \"/dev/vda1 66437775360 41231917056 25205858304 62% /\"\n\
-             echo \"/dev/vdb1 107374182400 91268055040 16106127360 85% /var/lib/mysql\"",
+            r#"echo "Filesystem 1-blocks Used Available Capacity Mounted on"
+echo "/dev/vda1 66437775360 41231917056 25205858304 62% /"
+echo "/dev/vdb1 107374182400 91268055040 16106127360 85% /var/lib/mysql""#,
         );
         stub(
             "who",
-            "echo \"deploy   pts/0        2026-11-12 09:12   .          88123 (198.51.100.24)\"",
+            r#"echo "deploy   pts/0        2026-11-12 09:12   .          88123 (198.51.100.24)""#,
         );
         stub(
             "ps",
-            "echo \"   1342 mysql    12.4 1268000 3562000 /usr/sbin/mysqld\"\n\
-             echo \"   1123 www-data  1.2   38900 3562000 nginx: worker process\"",
+            r#"echo "   1342 mysql    12.4 1268000 3562000 /usr/sbin/mysqld"
+echo "   1123 www-data  1.2   38900 3562000 nginx: worker process""#,
         );
         stub(
             "systemctl",
-            "[ \"$1\" = show ] || { echo \"systemd 255\"; exit 0; }\n\
-             seen=0\n\
-             for u in \"$@\"; do\n\
-               [ \"$seen\" = 1 ] || { [ \"$u\" = -- ] && seen=1; continue; }\n\
-               case $u in\n\
-                 redis*) printf \"Id=%s\\nActiveState=failed\\nSubState=failed\\nMainPID=0\\nNRestarts=3\\nResult=exit-code\\n\\n\" \"$u\" ;;\n\
-                 *) printf \"Id=%s\\nActiveState=active\\nSubState=running\\nMainPID=1123\\nMemoryCurrent=39845888\\nNRestarts=0\\nResult=success\\n\\n\" \"$u\" ;;\n\
-               esac\n\
-             done",
+            r#"case $1 in
+  show)
+    seen=0
+    for u in "$@"; do
+      [ "$seen" = 1 ] || { [ "$u" = -- ] && seen=1; continue; }
+      case $u in
+        redis*) printf "Id=%s\nActiveState=failed\nSubState=failed\nMainPID=0\nNRestarts=3\nResult=exit-code\n\n" "$u" ;;
+        *) printf "Id=%s\nActiveState=active\nSubState=running\nMainPID=1123\nMemoryCurrent=39845888\nNRestarts=0\nResult=success\n\n" "$u" ;;
+      esac
+    done ;;
+  list-units)
+    echo "nginx.service loaded active running A high performance web server"
+    echo "redis-server.service loaded failed failed Advanced key-value store"
+    echo "certbot.timer loaded active waiting Run certbot twice daily" ;;
+  list-timers)
+    now=$(date +%s)
+    echo "[{\"next\":$(( (now + 3600) * 1000000 )),\"left\":0,\"last\":$(( (now - 600) * 1000000 )),\"passed\":0,\"unit\":\"certbot.timer\",\"activates\":\"certbot.service\"}]" ;;
+  *) echo "systemd 255" ;;
+esac"#,
         );
         stub("uname", "echo x86_64");
         stub("systemd-detect-virt", "echo kvm");
-        stub("journalctl", "exit 1");
+        stub(
+            "journalctl",
+            r#"case "$*" in
+  *_COMM=sshd*)
+    now=$(date +%s)
+    echo "$((now - 100)).000000 fake-vps sshd[1]: Failed password for root from 198.51.100.203 port 1 ssh2"
+    echo "$((now - 200)).000000 fake-vps sshd[1]: Failed password for root from 198.51.100.203 port 2 ssh2"
+    echo "$((now - 4000)).000000 fake-vps sshd[1]: Invalid user admin from 192.0.2.155 port 3"
+    echo "$((now - 50)).000000 fake-vps sshd[1]: Accepted publickey for deploy from 203.0.113.50 port 4 ssh2" ;;
+  *" -f "*)
+    # Unit watcher: report a state change, then keep following.
+    sleep 1
+    echo "Started nginx.service - A high performance web server."
+    sleep 300 ;;
+  *) exit 1 ;;   # the plain user cannot read the system journal
+esac"#,
+        );
         stub(
             "id",
-            "case $1 in -u) echo 1000 ;; -un) echo deploy ;; *) echo \"uid=1000(deploy)\" ;; esac",
+            r#"case $1 in -u) echo 1000 ;; -un) echo deploy ;; *) echo "uid=1000(deploy)" ;; esac"#,
         );
         stub(
             "sudo",
             &format!(
-                "case $1 in\n\
-                   -n) exit 1 ;;\n\
-                   -S) IFS= read -r pw; [ \"$pw\" = \"{SUDO_PASSWORD}\" ] && exit 0; exit 1 ;;\n\
-                 esac\n\
-                 exit 1"
+                r#"n=0; s=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -n) n=1; shift ;;
+    -S) s=1; shift ;;
+    -k) shift ;;
+    -p) shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+if [ "$s" = 1 ]; then
+  IFS= read -r pw || exit 1
+  [ "$pw" = "{SUDO_PASSWORD}" ] || exit 1
+elif [ "$n" = 1 ]; then
+  exit 1
+fi
+[ $# -gt 0 ] || exit 0
+exec "$@""#
             ),
+        );
+        stub(
+            "ss",
+            r#"case "$*" in
+  *established*)
+    echo "0      0      203.0.113.10:22      198.51.100.24:50412"
+    echo "0      0      203.0.113.10:443     192.0.2.77:61022" ;;
+  *)
+    echo "tcp   LISTEN 0      4096       0.0.0.0:22        0.0.0.0:*"
+    echo "tcp   LISTEN 0      511        0.0.0.0:443       0.0.0.0:*"
+    echo "tcp   LISTEN 0      80       127.0.0.1:3306      0.0.0.0:*"
+    echo "tcp   LISTEN 0      511        0.0.0.0:6379      0.0.0.0:*" ;;
+esac"#,
+        );
+        stub(
+            "ufw",
+            r#"[ "$1 $2" = "status verbose" ] || exit 1
+cat <<'X'
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW IN    Anywhere
+80,443/tcp                 ALLOW IN    Anywhere
+X"#,
+        );
+        stub(
+            "fail2ban-client",
+            r#"if [ "$1" = status ] && [ -z "$2" ]; then
+  printf "Status\n|- Number of jail:\t1\n\`- Jail list:\tsshd\n"
+elif [ "$1" = status ] && [ "$2" = sshd ]; then
+  printf "Status for the jail: sshd\n|- Filter\n|  |- Currently failed:\t3\n|  |- Total failed:\t1284\n|  \`- File list:\t/var/log/auth.log\n\`- Actions\n   |- Currently banned:\t2\n   |- Total banned:\t102\n   \`- Banned IP list:\t198.51.100.203 192.0.2.155\n"
+fi"#,
+        );
+        stub(
+            "crontab",
+            r#"[ "$1" = -l ] && echo "*/5 * * * * /usr/local/bin/backup.sh""#,
         );
     }
 }

@@ -312,3 +312,15 @@ pub fn right<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.with_layout(Layout::right_to_left(Align::Center), add)
         .inner
 }
+
+/// Small mono label on a `bg-3` pill (listening ports, tags).
+pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::mono(11.0), color);
+    let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 18.0), Sense::hover());
+    ui.painter().rect_filled(r, R, BG3);
+    ui.painter()
+        .galley(r.center() - galley.size() / 2.0, galley, color);
+    resp
+}

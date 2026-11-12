@@ -169,3 +169,120 @@ pub(crate) fn ratio(a: u64, b: u64) -> f32 {
         (a as f64 / b as f64) as f32
     }
 }
+
+// ───────────────────────── M3: watch sections ─────────────────────────
+
+/// A listening socket (`ss -Htlnu`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listener {
+    pub proto: String,
+    pub addr: String,
+    pub port: u16,
+    /// Only known when the collector can see other users' processes (root).
+    pub process: String,
+}
+
+impl Listener {
+    /// Bound to a non-loopback address.
+    pub fn is_public(&self) -> bool {
+        let a = self.addr.trim_matches(['[', ']']);
+        !(a.starts_with("127.") || a == "::1" || a.starts_with("::ffff:127.") || a == "localhost")
+    }
+}
+
+/// An established TCP connection (`ss -Htn state established`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Conn {
+    pub local: String,
+    pub peer: String,
+    pub process: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FwRule {
+    pub to: String,
+    pub action: String,
+    pub from: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Firewall {
+    /// `ufw`, `nftables` or `iptables`.
+    pub backend: String,
+    pub active: bool,
+    pub incoming: String,
+    pub outgoing: String,
+    pub routed: String,
+    pub rules: Vec<FwRule>,
+}
+
+impl Firewall {
+    /// Whether an ALLOW rule mentions this port (best effort; used for alerts only).
+    pub fn allows_port(&self, port: u16) -> bool {
+        let p = port.to_string();
+        self.rules
+            .iter()
+            .filter(|r| r.action.to_ascii_uppercase().starts_with("ALLOW") || r.action == "ACCEPT")
+            .any(|r| {
+                r.to.split(['/', ' ', ',', ':']).any(|t| t == p)
+                    || r.to.split(['/', ' ']).any(|t| {
+                        t.split_once(':').is_some_and(|(a, b)| {
+                            a.parse::<u16>().is_ok_and(|a| {
+                                b.parse::<u16>().is_ok_and(|b| (a..=b).contains(&port))
+                            })
+                        })
+                    })
+            })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Jail {
+    pub name: String,
+    pub currently_failed: u32,
+    pub total_failed: u32,
+    pub currently_banned: u32,
+    pub total_banned: u32,
+    pub banned_ips: Vec<String>,
+}
+
+/// Failed SSH logins over the last 24 h.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthStats {
+    /// 48 half-hour buckets, oldest first.
+    pub buckets: Vec<u32>,
+    /// Top offending addresses, most attempts first.
+    pub top: Vec<(String, u32)>,
+}
+
+impl AuthStats {
+    pub fn total(&self) -> u32 {
+        self.buckets.iter().sum()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Timer {
+    pub unit: String,
+    pub activates: String,
+    /// Seconds until the next run (None = not scheduled).
+    pub next_in_s: Option<u64>,
+    /// Seconds since the last run (None = never).
+    pub last_ago_s: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scheduled {
+    pub timers: Vec<Timer>,
+    /// Non-comment lines in the user's crontab.
+    pub cron_jobs: Vec<String>,
+}
+
+/// A unit offered in the "Watched services" picker.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitInfo {
+    pub name: String,
+    pub active: String,
+    pub sub: String,
+    pub description: String,
+}

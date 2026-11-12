@@ -171,6 +171,13 @@ pub enum Command {
     ClosePty(PtyId),
     /// Answer to [`EventKind::HostKeyPrompt`].
     HostKey(KeyDecision),
+    /// Live / Poll / Manual service status (protocol §3).
+    SetServiceMode {
+        mode: sw_core::config::ServiceMode,
+        poll_secs: u32,
+    },
+    /// Fetch the unit list for the "Watched services" picker → [`EventKind::Units`].
+    ListUnits,
     /// Answer to [`EventKind::SudoPrompt`]: `None` = skip (no privileged features).
     SudoPassword(Option<SecretString>),
     /// Ask for the sudo password again (status bar → "no sudo").
@@ -206,6 +213,17 @@ pub enum EventKind {
         attempts_left: u8,
     },
     Sudo(SudoMode),
+    Listeners(Vec<sw_core::model::Listener>),
+    Conns(Vec<sw_core::model::Conn>),
+    Firewall(sw_core::model::Firewall),
+    Jails(Vec<sw_core::model::Jail>),
+    Auth(sw_core::model::AuthStats),
+    Scheduled(sw_core::model::Scheduled),
+    Units(Vec<sw_core::model::UnitInfo>),
+    /// Effective service-status mode (Live degrades to polling without journal access).
+    ServiceMode {
+        live_watching: bool,
+    },
     Static(HostStatic),
     Cpu(CpuSample),
     Mem(MemSample),

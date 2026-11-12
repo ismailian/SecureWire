@@ -1,7 +1,7 @@
 //! Client-side alert rules (ui-spec §3.4). Pure: same inputs → same alerts.
 
 use crate::format;
-use crate::model::{ActiveState, MemSample, Mount, ServiceInfo};
+use crate::model::{ActiveState, Firewall, Listener, MemSample, Mount, ServiceInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -51,6 +51,8 @@ pub struct Inputs<'a> {
     pub services: &'a [ServiceInfo],
     pub mounts: &'a [Mount],
     pub mem: Option<&'a MemSample>,
+    pub listeners: &'a [Listener],
+    pub firewall: Option<&'a Firewall>,
 }
 
 /// Evaluate all rules. Output is sorted by severity, then key.
@@ -132,6 +134,30 @@ pub fn evaluate(i: Inputs<'_>, t: &Thresholds) -> Vec<Alert> {
         }
     }
 
+    // A public listener the firewall doesn't mention (only when the firewall is active and
+    // denies incoming by default, i.e. when the rules are the source of truth).
+    if let Some(fw) = i
+        .firewall
+        .filter(|f| f.active && matches!(f.incoming.as_str(), "deny" | "drop" | "reject"))
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for l in i
+            .listeners
+            .iter()
+            .filter(|l| l.is_public() && !fw.allows_port(l.port))
+        {
+            if seen.insert(l.port) {
+                out.push(Alert {
+                    key: format!("listener:{}", l.port),
+                    severity: Severity::Warn,
+                    title: format!("{} listening on {}:{} without a firewall rule", if l.process.is_empty() { "A service" } else { &l.process }, l.addr, l.port),
+                    detail: format!("{} is bound to a public address but no {} rule allows it (default: {} incoming)", l.proto, fw.backend, fw.incoming),
+                    actions: vec![],
+                });
+            }
+        }
+    }
+
     out.sort_by(|a, b| a.severity.cmp(&b.severity).then_with(|| a.key.cmp(&b.key)));
     out
 }
@@ -182,6 +208,7 @@ mod tests {
                 services: &services,
                 mounts: &mounts,
                 mem: Some(&mem),
+                ..Default::default()
             },
             &Thresholds::default(),
         );
@@ -189,5 +216,72 @@ mod tests {
         assert_eq!(a[0].severity, Severity::Error);
         assert_eq!(a[0].detail, "result exit-code · 3m ago");
         assert_eq!(a[1].key, "disk:/var/lib/mysql");
+    }
+}
+
+#[cfg(test)]
+mod m3_tests {
+    use super::*;
+    use crate::model::FwRule;
+
+    #[test]
+    fn unexpected_public_listener() {
+        let listeners = [
+            Listener {
+                proto: "tcp".into(),
+                addr: "0.0.0.0".into(),
+                port: 22,
+                process: "sshd".into(),
+            },
+            Listener {
+                proto: "tcp".into(),
+                addr: "0.0.0.0".into(),
+                port: 6379,
+                process: "redis-server".into(),
+            },
+            Listener {
+                proto: "tcp".into(),
+                addr: "127.0.0.1".into(),
+                port: 3306,
+                process: String::new(),
+            },
+        ];
+        let fw = Firewall {
+            backend: "ufw".into(),
+            active: true,
+            incoming: "deny".into(),
+            rules: vec![FwRule {
+                to: "22/tcp".into(),
+                action: "ALLOW IN".into(),
+                from: "Anywhere".into(),
+            }],
+            ..Default::default()
+        };
+        let a = evaluate(
+            Inputs {
+                listeners: &listeners,
+                firewall: Some(&fw),
+                ..Default::default()
+            },
+            &Thresholds::default(),
+        );
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].key, "listener:6379");
+        // Inactive firewall → no opinion.
+        let off = Firewall {
+            active: false,
+            ..fw
+        };
+        assert!(
+            evaluate(
+                Inputs {
+                    listeners: &listeners,
+                    firewall: Some(&off),
+                    ..Default::default()
+                },
+                &Thresholds::default()
+            )
+            .is_empty()
+        );
     }
 }

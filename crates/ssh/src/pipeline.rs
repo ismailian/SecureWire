@@ -18,6 +18,8 @@ pub struct Pipeline {
     mem: Option<MemSample>,
     mounts: Vec<Mount>,
     services: Vec<ServiceInfo>,
+    listeners: Vec<sw_core::model::Listener>,
+    firewall: Option<sw_core::model::Firewall>,
     alerts: Vec<Alert>,
     thresholds: Thresholds,
     errors: HashMap<Section, String>,
@@ -85,13 +87,21 @@ impl Pipeline {
                 out.push(EventKind::Services(self.services.clone()));
                 self.eval_alerts(out);
             }
-            // Parsers for these arrive with their milestones (M3).
-            Section::Ports
-            | Section::Conns
-            | Section::Fw
-            | Section::F2b
-            | Section::Auth
-            | Section::Timers => {}
+            Section::Ports => {
+                self.listeners = parse::parse_listeners(p);
+                out.push(EventKind::Listeners(self.listeners.clone()));
+                self.eval_alerts(out);
+            }
+            Section::Conns => out.push(EventKind::Conns(parse::parse_conns(p))),
+            Section::Fw => {
+                let fw = parse::parse_firewall(p);
+                self.firewall = Some(fw.clone());
+                out.push(EventKind::Firewall(fw));
+                self.eval_alerts(out);
+            }
+            Section::F2b => out.push(EventKind::Jails(parse::parse_f2b(p))),
+            Section::Auth => out.push(EventKind::Auth(parse::parse_auth(p))),
+            Section::Timers => out.push(EventKind::Scheduled(parse::parse_timers(p))),
         }
     }
 
@@ -101,6 +111,8 @@ impl Pipeline {
                 services: &self.services,
                 mounts: &self.mounts,
                 mem: self.mem.as_ref(),
+                listeners: &self.listeners,
+                firewall: self.firewall.as_ref(),
             },
             &self.thresholds,
         );

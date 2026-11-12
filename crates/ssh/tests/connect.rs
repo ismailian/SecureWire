@@ -18,6 +18,16 @@ struct Fixture {
     host: HostHandle,
     rx: Receiver<Event>,
     _dir: TempDir,
+    /// Every event received so far (for order-independent checks).
+    seen: std::cell::RefCell<Vec<EventKind>>,
+}
+
+/// Like [`wait_for`], but also succeeds on an event that already went by.
+fn seen_or_wait(f: &Fixture, mut pred: impl FnMut(&EventKind) -> bool) -> EventKind {
+    if let Some(e) = f.seen.borrow().iter().find(|e| pred(e)) {
+        return e.clone();
+    }
+    wait_for(f, KeyDecision::Once, pred)
 }
 
 /// Minimal temp dir (no extra dependency).
@@ -73,6 +83,7 @@ fn connect(port: u16, auth: AuthSpec, dir: TempDir) -> Fixture {
         host,
         rx,
         _dir: dir,
+        seen: Default::default(),
     }
 }
 
@@ -92,6 +103,7 @@ fn wait_for(
         if std::env::var_os("SW_TRACE").is_some() {
             eprintln!("event: {ev:?}");
         }
+        f.seen.borrow_mut().push(ev.clone());
         if let EventKind::HostKeyPrompt { .. } = ev {
             if pred(&ev) {
                 return ev;
@@ -476,4 +488,50 @@ fn probe_sudo_and_live_collector_over_ssh() {
         unreachable!()
     };
     assert_eq!(s[0].id, "redis-server.service");
+
+    // M3: once sudo works the collector restarts with privilege → root-only sections arrive.
+    seen_or_wait(
+        &f,
+        |e| matches!(e, EventKind::Firewall(fw) if fw.backend == "ufw"),
+    );
+    seen_or_wait(&f, |e| matches!(e, EventKind::Jails(j) if !j.is_empty()));
+
+    // Live service mode: the journal isn't readable as this user, so the watcher runs via
+    // `sudo -S` with the held password, on its own channel.
+    f.host.send(Command::SetServiceMode {
+        mode: sw_core::config::ServiceMode::Live,
+        poll_secs: 30,
+    });
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(
+            e,
+            EventKind::ServiceMode {
+                live_watching: true
+            }
+        )
+    });
+    f.host.send(Command::SetServiceMode {
+        mode: sw_core::config::ServiceMode::Poll,
+        poll_secs: 30,
+    });
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(
+            e,
+            EventKind::ServiceMode {
+                live_watching: false
+            }
+        )
+    });
+
+    // Unit picker list.
+    f.host.send(Command::ListUnits);
+    let EventKind::Units(u) = wait_for(&f, KeyDecision::Once, |e| matches!(e, EventKind::Units(_)))
+    else {
+        unreachable!()
+    };
+    assert_eq!(u.len(), 3);
+    assert!(
+        u.iter()
+            .any(|x| x.name == "redis-server.service" && x.active == "failed")
+    );
 }

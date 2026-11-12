@@ -3,7 +3,7 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** M2 done (2026-11-12) — probe, sudo password flow, and the bash collector streaming live CPU / memory / network / disk / sessions / processes over the same SSH connection into the SYSTEM panel, Alerts and Processes tabs. Tested against a fake host under local bash (no real VPS yet). Next: M3 (services, firewall, security).
+**Status:** M3 done (2026-11-12) — WATCH panel live: watched services (picker, Live/Poll/Manual with a journal-driven unit watcher), firewall (ufw/nftables/iptables), fail2ban jails + failed SSH logins, timers + crontab; listening ports and connections; root-only reads run with the session's sudo password. Tested against a fake host under local bash. Next: M4 (logs).
 
 Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB.
 
@@ -262,7 +262,7 @@ cargo test -p securewire-ssh --test connect   # real actor vs in-process server 
 | **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. Open: Inter + JetBrains Mono not embedded yet (egui default fonts in use) |
 | **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** vim/htop/tmux on a real VPS; ssh-agent path untested (agent service disabled on dev machine) |
 | **M2** ✅ | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling (inactive host tabs run Hidden), status bar | Done 2026-11-12 against a fake host (3 collector tests + full SSH e2e test + GUI check). **Open:** real-VPS check of §8 targets; sh fallback for hosts without bash; shellcheck |
-| **M3** | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Service failure shows within 1 s in Live mode |
+| **M3** ✅ | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Done 2026-11-12: 6 collector tests (incl. sudo password / wrong password / no sudo), SSH e2e covers collector restart with privilege, Live watcher via `sudo -S`, unit list. **Open:** "failure within 1 s" needs a real systemd host to measure |
 | **M4** | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | 50 lines/s stays < 4 ms/frame |
 | **M5** | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts | Daily-driver for 3 hosts |
 | **M6** | Perf pass, packaging (Windows MSI / Linux AppImage + .deb / macOS dmg), sudoers snippet docs | Budgets in §6 verified and recorded |

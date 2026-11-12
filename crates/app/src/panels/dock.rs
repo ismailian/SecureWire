@@ -18,15 +18,7 @@ pub fn show(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi, hide: &mut bool) {
         DockTab::Logs => logs(ui, v, hu),
         DockTab::Alerts => alerts(ui, v),
         DockTab::Processes => processes(ui, v),
-        DockTab::Connections => {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.label(w::faint(
-                    "Established connections (`ss -Htn`) arrive with the `conns` section in M3.",
-                ));
-            });
-        }
+        DockTab::Connections => connections(ui, v),
     }
 }
 
@@ -380,6 +372,43 @@ fn processes(ui: &mut Ui, v: &HostView) {
                                 ui.end_row();
                             }
                         });
+                });
+        });
+}
+
+fn connections(ui: &mut Ui, v: &HostView) {
+    if v.conns.is_empty() {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(w::faint("No established TCP connections reported yet (refreshed every 60 s while this tab is open)."));
+        });
+        return;
+    }
+    ScrollArea::vertical()
+        .id_salt("conns")
+        .auto_shrink(false)
+        .show_rows(ui, 20.0, v.conns.len() + 1, |ui, range| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(10, 0))
+                .show(ui, |ui| {
+                    for i in range {
+                        ui.horizontal(|ui| {
+                            let col = |ui: &mut Ui, w_: f32, t: RichText| {
+                                ui.add_sized(vec2(w_, 18.0), egui::Label::new(t).truncate());
+                            };
+                            if i == 0 {
+                                col(ui, 220.0, w::faint("LOCAL"));
+                                col(ui, 240.0, w::faint("PEER"));
+                                col(ui, 160.0, w::faint("PROCESS"));
+                            } else {
+                                let c = &v.conns[i - 1];
+                                col(ui, 220.0, w::mono(&c.local, TX1));
+                                col(ui, 240.0, w::mono(&c.peer, TX0));
+                                col(ui, 160.0, w::mono(&c.process, TX2));
+                            }
+                        });
+                    }
                 });
         });
 }
