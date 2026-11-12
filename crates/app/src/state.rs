@@ -96,6 +96,7 @@ pub struct HostView {
     /// Seqs of new lines since the last frame (the log view filters them incrementally).
     pub new_log_seqs: Vec<u64>,
     pub unseen_errors: u32,
+    pub probe: Option<sw_core::parse::Probe>,
 }
 
 impl HostView {
@@ -124,6 +125,7 @@ impl HostView {
             logs: LogStore::new(10_000),
             new_log_seqs: vec![],
             unseen_errors: 0,
+            probe: None,
         }
     }
 
@@ -208,11 +210,18 @@ impl HostView {
             EventKind::SectionError { section, code } => {
                 self.section_errors.insert(section, code);
             }
+            EventKind::Probe(p) => self.probe = Some(p),
+            EventKind::Sudo(mode) => {
+                if let Some(i) = &mut self.info {
+                    i.sudo = mode;
+                }
+            }
             // Handled by the app (dialogs, banners, terminal tabs).
             EventKind::HostKeyPrompt { .. }
             | EventKind::AuthFailed(_)
             | EventKind::Error(_)
-            | EventKind::PtyClosed { .. } => {}
+            | EventKind::PtyClosed { .. }
+            | EventKind::SudoPrompt { .. } => {}
         }
     }
 }
@@ -322,6 +331,8 @@ pub struct HostUi {
     pub services_live: bool,
     /// Sections currently ON at the collector, to diff against.
     pub sent_on: HashMap<Section, bool>,
+    /// Last collection speed sent to this host (inactive host tabs run Hidden).
+    pub sent_throttle: Option<sw_ssh::api::Throttle>,
 }
 
 impl Default for HostUi {
@@ -332,6 +343,7 @@ impl Default for HostUi {
             filter: LogFilter::default(),
             services_live: true,
             sent_on: HashMap::new(),
+            sent_throttle: None,
         }
     }
 }

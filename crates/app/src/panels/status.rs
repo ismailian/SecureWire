@@ -15,7 +15,9 @@ fn item(ui: &mut Ui, text: impl Into<RichText>) {
     ui.add_space(10.0);
 }
 
-pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
+/// Returns true when the user clicked "no sudo" to enter the password again.
+pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) -> bool {
+    let mut ask_sudo = false;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let small = |t: String, c| RichText::new(t).size(11.5).color(c);
@@ -65,11 +67,25 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
             let (t, c) = match i.sudo {
                 SudoMode::Root => ("root", TX2),
                 SudoMode::NoPasswd => ("sudo (nopasswd)", TX2),
-                SudoMode::Password => ("sudo ✓", TX2),
+                SudoMode::Password => ("sudo ok", TX2),
                 SudoMode::None => ("no sudo", WARN),
                 SudoMode::Unknown => ("sudo ?", TX3),
             };
-            item(ui, small(t.into(), c));
+            if i.sudo == SudoMode::None && v.probe.as_ref().is_some_and(|p| p.sudo) {
+                ui.add_space(10.0);
+                let r = ui
+                    .add(
+                        egui::Label::new(small(format!("{t} · enter password"), c))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Privileged panels need sudo — click to enter the password");
+                if r.clicked() {
+                    ask_sudo = true;
+                }
+                ui.add_space(10.0);
+            } else {
+                item(ui, small(t.into(), c));
+            }
         }
         if let Some(rtt) = v.link.rtt_ms {
             item(ui, small(format!("RTT {rtt} ms"), TX2));
@@ -94,7 +110,11 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
                 item(
                     ui,
                     small(
-                        format!("overhead ↓ {}", format::rate(v.link.overhead_bps)),
+                        format!(
+                            "overhead {} {}",
+                            ph::ARROW_DOWN,
+                            format::rate(v.link.overhead_bps)
+                        ),
                         TX2,
                     ),
                 );
@@ -129,4 +149,5 @@ pub fn show(ui: &mut Ui, v: &HostView, throttle: Throttle) {
             );
         });
     });
+    ask_sudo
 }

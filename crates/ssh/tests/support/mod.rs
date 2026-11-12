@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex};
 use russh::keys::PublicKey;
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+pub mod fakehost;
 
 pub const USER: &str = "tester";
 pub const PASSWORD: &str = "securewire-test";
@@ -96,6 +99,22 @@ pub fn start_with_host_key(path: &Path) -> TestServer {
 
 /// Listen on 127.0.0.1:`port` (0 = any free port).
 pub fn start_on(port: u16, path: &Path) -> TestServer {
+    start_on_with(port, path, None)
+}
+
+/// Like [`start`], but `exec` requests run through a local bash in `env` (a [`fakehost::FakeHost`]).
+pub fn start_with_exec(env: ExecEnv) -> TestServer {
+    start_on_with(0, &fixture("test_host_ed25519"), Some(env))
+}
+
+#[derive(Clone)]
+pub struct ExecEnv {
+    pub bash: PathBuf,
+    pub env: Vec<(String, String)>,
+}
+
+pub fn start_on_with(port: u16, path: &Path, exec: Option<ExecEnv>) -> TestServer {
+    let exec = exec.map(Arc::new);
     let host = russh::keys::load_secret_key(path, None).expect("host key");
     let host_pub = host.public_key().clone();
     let client_keys: Vec<PublicKey> = ["test_client_ed25519.pub", "test_client_ed25519_enc.pub"]
@@ -130,6 +149,8 @@ pub fn start_on(port: u16, path: &Path) -> TestServer {
                     client_keys: client_keys.clone(),
                     obs: obs.clone(),
                     lines: HashMap::new(),
+                    exec: exec.clone(),
+                    stdins: HashMap::new(),
                 };
                 let cfg = config.clone();
                 tokio::spawn(async move {
@@ -151,6 +172,9 @@ struct Shell {
     client_keys: Vec<PublicKey>,
     obs: Arc<Mutex<Observed>>,
     lines: HashMap<ChannelId, String>,
+    exec: Option<Arc<ExecEnv>>,
+    /// Exec channels: client data goes to the local process.
+    stdins: HashMap<ChannelId, tokio::process::ChildStdin>,
 }
 
 const PROMPT: &[u8] = b"\x1b[32mtester@sw-test\x1b[0m:~$ ";
@@ -237,12 +261,81 @@ impl server::Handler for Shell {
         Ok(())
     }
 
+    /// Run the command through a local bash in the fake-host environment, relaying
+    /// stdin/stdout and the exit status — enough for probe, sudo check and collector.
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(exec) = self.exec.clone() else {
+            session.close(channel)?;
+            return Ok(());
+        };
+        let cmd = String::from_utf8_lossy(data).into_owned();
+        let mut child = match tokio::process::Command::new(&exec.bash)
+            .arg("-c")
+            .arg(&cmd)
+            .envs(exec.env.iter().cloned())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                session.close(channel)?;
+                return Ok(());
+            }
+        };
+        if let Some(stdin) = child.stdin.take() {
+            self.stdins.insert(channel, stdin);
+        }
+        let mut stdout = child.stdout.take().expect("stdout");
+        let handle = session.handle();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = stdout.read(&mut buf).await {
+                if n == 0 || handle.data(channel, buf[..n].to_vec()).await.is_err() {
+                    break;
+                }
+            }
+            let code = child
+                .wait()
+                .await
+                .ok()
+                .and_then(|s| s.code())
+                .unwrap_or(255) as u32;
+            let _ = handle.exit_status_request(channel, code).await;
+            let _ = handle.eof(channel).await;
+            let _ = handle.close(channel).await;
+        });
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.stdins.remove(&channel); // dropping stdin = EOF for the process
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         channel: ChannelId,
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if let Some(stdin) = self.stdins.get_mut(&channel) {
+            if stdin.write_all(data).await.is_err() {
+                self.stdins.remove(&channel);
+            }
+            return Ok(());
+        }
         for &b in data {
             let line = self.lines.entry(channel).or_default();
             match b {

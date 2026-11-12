@@ -95,3 +95,15 @@ Format: **context → decision → consequences**.
 
 ### D-021 · Host-key prompts don't count against the connect timeout
 - **Decision:** The TCP connect is bounded by `connect_timeout` (15 s). The SSH handshake uses an idle deadline that re-arms while a host-key prompt is open and for `connect_timeout` after it closes. A late answer to an abandoned prompt is discarded and can never approve a later key. Each PTY channel has a generation number, so a reader from a dropped connection can't close the tab's new shell.
+
+### D-022 · Collector travels on stdin (`bash -s`), not as a quoted argument
+- **Context:** D-003 planned `exec bash -c '<script>'`, which depends on the remote login shell's quoting rules (fish and csh differ) and puts the whole script in `ps`.
+- **Decision:** `exec bash -s securewire-collector F M S`, script streamed on stdin. bash executes it command by command, so lines written after its final `main "$@"` arrive in `main` as control commands. The probe uses `exec sh -s` the same way.
+- **Consequences:** The script must end with the `main` call (unit test). The "no single quotes" rule is gone. Supersedes the transport detail of D-003.
+
+### D-023 · The collector doesn't get the sudo password until a section needs it
+- **Decision:** M2's sections need no privilege, so the password is verified and held by the actor but never sent to the collector. M3 (firewall, fail2ban) will pass it as the first stdin line (protocol §9).
+
+### D-024 · Coalesce collector packets before waking the UI
+- **Context:** Measured ~2.5 repaints/s with a 2 s tier — bash writes each section as a separate SSH packet, one wake each. Client CPU 1.15 %.
+- **Decision:** The reader collects packets arriving within 30 ms and emits them as one batch. Result: ~1.3 repaints/s, client CPU 0.78 % with live metrics (budget < 1 %).

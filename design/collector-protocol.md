@@ -30,15 +30,17 @@ Status: design v0.1 — the source of truth for `crates/ssh` and `collector/coll
 
 ### 2.1 Launch
 
-The collector is a bash script embedded in the binary (`include_str!("../../collector/collector.sh")`). It is sent **as the exec command**, not written to disk:
+The collector is a bash script embedded in the binary (`include_str!("../../../collector/collector.sh")`). It is **streamed on the stdin** of the exec command, never written to disk:
 
 ```
-exec bash -c '<collector.sh, single-quote-escaped>' securewire <fast_s> <medium_s> <slow_s>
+exec bash -s securewire-collector <fast_s> <medium_s> <slow_s>
 ```
 
-- Nothing is installed or written on the server. Visible in `ps` as `bash -c …` (acceptable; documented).
+- bash reads a script from stdin one command at a time, so everything the client writes after the script's last line (`main "$@"`) is read by `main` as control input. Rule: the script is all function definitions and its **last line calls `main`** (unit-tested); anything after it would be swallowed as input.
+- No quoting of the script through the user's login shell (works the same under bash, zsh, fish, csh), no script text in `ps` (it shows `bash -s securewire-collector 2 10 60`).
+- Nothing is installed or written on the server. The script avoids here-strings (older bash backs them with temp files) and uses builtins on the fast tier.
+- Test hooks: `SW_PROC` (fake `/proc` root) and `SW_OS_RELEASE`; unset in production.
 - `bash` is required for `read -t` (timed reads → control commands without polling) and associative arrays. Detected during the probe step (§4). **Fallback for hosts without bash** (e.g. Alpine): run the same logic with `/bin/sh` in *restart mode* — no stdin control; any config change closes and reopens the channel.
-- Escaping: the script must not contain single quotes (enforced by a unit test), so wrapping in `'…'` is enough. This also works when the user's login shell is zsh or fish, because `exec bash` replaces it immediately.
 
 ### 2.2 Output framing (server → client)
 
@@ -98,7 +100,7 @@ Notes
 - `auth`: on connect, `journalctl _COMM=sshd --since -24h -o short-unix --no-pager | grep -E 'Failed|Invalid user'` bucketed per 30 min in awk → 48 numbers. Afterwards, if the `sshd` log source is enabled, the client increments buckets from the live log stream and the section is turned `OFF`.
 - A section whose tool is missing emits `␞ERR <section> <seq> missing` once and is auto-disabled; the UI shows an inline "not available on this host" state.
 
-### 2.5 Script skeleton (illustrative — the real file is `collector/collector.sh`, kept shellcheck-clean)
+### 2.5 Script skeleton (illustrative and pre-implementation — `collector/collector.sh` is authoritative)
 
 ```bash
 # securewire collector — no single quotes allowed in this file
@@ -237,7 +239,7 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 
 ### How each channel gets the password
 - **One-shot actions & `$SUDO tail -F` log channel:** exec `sudo -S -p "" <cmd>`, then write `password\n` to the channel's stdin. The command itself never reads stdin, so nothing else is needed.
-- **Collector:** launched with a 4th argument `password`; the script's first action is `IFS= read -r SWPW` from stdin (before control commands start). Privileged sections call a helper that pipes the variable through a **builtin** `printf`, so the password never appears in any process's argv or environment:
+- **Collector:** (M3, when the first privileged section exists — M2 sections need no privilege, so the collector is not given the password at all) the password is the first stdin line after the script; `main` reads it with `IFS= read -r SWPW` before control commands start. Privileged sections call a helper that pipes the variable through a **builtin** `printf`, so the password never appears in any process's argv or environment:
   ```bash
   sudo_run() { printf "%s\n" "$SWPW" | sudo -S -p "" "$@" 2>&1; }
   ```
@@ -248,3 +250,11 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 - The password is never logged (not even at trace), never written to disk, never placed in argv, env, or a here-doc file, and never sent to a terminal tab.
 - Status bar shows the mode: `root`, `sudo (nopasswd)`, `sudo ✓` (password held), or `no sudo` (click → re-enter password).
 - A failed privileged command with `sudo: a password is required` / `incorrect password` drops the stored password and sets mode `none` (the password changed on the server).
+
+## 10. Implementation notes (M2)
+
+- **Probe** runs as `exec sh -s` with `collector/probe.sh` on stdin, then EOF. Output is parsed by `sw_core::parse::parse_probe`.
+- **Sudo check** is `sudo -S -k -p "" true` with the password as the only stdin line, then EOF — one attempt per submission, max 3 per host session.
+- **RTT** in the status bar is `PING`→`PONG` through the collector, so it includes the collector's loop latency (a few ms on Linux; much more on a Windows test bash, where forks are slow). The first sample is sent right after the collector starts.
+- **Wake-ups:** bash writes each section as its own SSH packet; the reader gathers packets that arrive within 30 ms and hands them to the UI as one batch (one repaint per tick, not per section).
+- **Tests:** `crates/ssh/tests/collector.rs` runs the real script under a local bash against a fake host (`tests/support/fakehost.rs`: fake `/proc` + stub `df`/`who`/`ps`/`systemctl`/`id`/`sudo`); `tests/connect.rs` runs probe → sudo → collector end to end through the in-process SSH server, whose exec requests execute in that fake host.

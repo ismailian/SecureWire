@@ -6,20 +6,25 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::ChannelMsg;
 use russh::client::{self, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
+use sw_core::Section;
+use sw_core::model::LinkStats;
+use sw_core::parse::Probe;
 use sw_term::Terminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::Waker;
 use crate::api::{
     AuthSpec, Command, ConnInfo, ConnState, ConnectSpec, Event, EventKind, HostId, HostKeyStatus,
-    KeyDecision, PtyId, SudoMode,
+    KeyDecision, PtyId, SudoMode, Throttle,
 };
+use crate::collector;
+use crate::remote::{self, CollectorMsg};
 
 const BACKOFF: [u32; 6] = [1, 2, 4, 8, 16, 30];
 const TERM_NAME: &str = "xterm-256color";
@@ -36,6 +41,17 @@ impl Shared {
             host: self.id,
             kind,
         });
+        (self.wake)();
+    }
+
+    /// Several events, one UI wake-up.
+    fn emit_batch(&self, kinds: Vec<EventKind>) {
+        for kind in kinds {
+            let _ = self.events.send(Event {
+                host: self.id,
+                kind,
+            });
+        }
         (self.wake)();
     }
 }
@@ -311,6 +327,15 @@ enum Internal {
         generation: u64,
         exit: Option<u32>,
     },
+    Probed(Result<Probe, String>),
+    SudoChecked {
+        password: SecretString,
+        result: Result<bool, String>,
+    },
+    CollectorStarted {
+        generation: u64,
+        result: Result<remote::Writer, String>,
+    },
 }
 
 struct Pty {
@@ -325,6 +350,8 @@ enum End {
     Lost,
 }
 
+const SUDO_ATTEMPTS: u8 = 3;
+
 pub(crate) struct Actor {
     shared: Arc<Shared>,
     spec: ConnectSpec,
@@ -336,6 +363,25 @@ pub(crate) struct Actor {
     internal_tx: UnboundedSender<Internal>,
     internal_rx: UnboundedReceiver<Internal>,
     next_generation: u64,
+    // ---- collector (protocol §2), replayed onto every new collector ----
+    sections: HashMap<Section, bool>,
+    throttle: Throttle,
+    services: Vec<String>,
+    collector: Option<remote::Writer>,
+    /// Bumped per session so messages from an old collector are ignored.
+    collector_gen: u64,
+    coll_tx: UnboundedSender<CollectorMsg>,
+    coll_rx: UnboundedReceiver<CollectorMsg>,
+    clock: Instant,
+    link: LinkStats,
+    // ---- privilege (protocol §9) ----
+    probe: Option<Probe>,
+    sudo_mode: SudoMode,
+    /// Held in memory for the host session (survives reconnects), never persisted.
+    sudo_password: Option<SecretString>,
+    sudo_attempts: u8,
+    sudo_checking: bool,
+    sudo_skipped: bool,
 }
 
 impl Actor {
@@ -348,6 +394,7 @@ impl Actor {
     ) -> Self {
         let (decisions_tx, decisions_rx) = unbounded_channel();
         let (internal_tx, internal_rx) = unbounded_channel();
+        let (coll_tx, coll_rx) = unbounded_channel();
         Self {
             shared: Arc::new(Shared { id, events, wake }),
             spec,
@@ -359,6 +406,21 @@ impl Actor {
             internal_tx,
             internal_rx,
             next_generation: 1,
+            sections: HashMap::new(),
+            throttle: Throttle::Normal,
+            services: Vec::new(),
+            collector: None,
+            collector_gen: 0,
+            coll_tx,
+            coll_rx,
+            clock: Instant::now(),
+            link: LinkStats::default(),
+            probe: None,
+            sudo_mode: SudoMode::Unknown,
+            sudo_password: None,
+            sudo_attempts: 0,
+            sudo_checking: false,
+            sudo_skipped: false,
         }
     }
 
@@ -388,13 +450,25 @@ impl Actor {
                 let _ = self.decisions_tx.send(d);
                 None
             }
-            // Collector commands arrive with M2; input while offline is dropped.
-            Command::SetSection { .. }
-            | Command::Now(_)
-            | Command::Throttle(_)
-            | Command::SetServices(_)
+            // Remembered while offline, replayed onto the next collector.
+            Command::SetSection { section, on } => {
+                self.sections.insert(section, on);
+                None
+            }
+            Command::Throttle(t) => {
+                self.throttle = t;
+                None
+            }
+            Command::SetServices(u) => {
+                self.services = u;
+                None
+            }
+            // Meaningless without a connection.
+            Command::Now(_)
             | Command::PtyInput { .. }
-            | Command::PtyResize { .. } => None,
+            | Command::PtyResize { .. }
+            | Command::SudoPassword(_)
+            | Command::SudoAsk => None,
             other => Some(other),
         }
     }
@@ -651,6 +725,7 @@ impl Actor {
     }
 
     async fn session(&mut self, handle: Handle<Client>) -> End {
+        let handle = Arc::new(handle);
         let (algorithm, fingerprint, key_known) = self.keys.lock().seen.clone().unwrap_or_default();
         self.emit(EventKind::Connected(ConnInfo {
             user: self.spec.user.clone(),
@@ -659,7 +734,7 @@ impl Actor {
             host_key: algorithm,
             fingerprint,
             key_known,
-            sudo: SudoMode::Unknown, // probed in M2
+            sudo: self.sudo_mode,
         }));
         self.emit(EventKind::State(ConnState::Connected));
 
@@ -671,7 +746,17 @@ impl Actor {
         }
         self.emit_link();
 
+        // Probe → sudo → collector run off this loop so the terminal stays responsive.
+        self.collector_gen += 1;
+        {
+            let (h, tx) = (handle.clone(), self.internal_tx.clone());
+            tokio::spawn(async move {
+                let _ = tx.send(Internal::Probed(remote::run_probe(&h).await));
+            });
+        }
+
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut ping = tokio::time::interval(Duration::from_secs(10));
         loop {
             tokio::select! {
                 c = self.rx.recv() => {
@@ -700,24 +785,53 @@ impl Actor {
                             }
                             self.emit_link();
                         }
+                        Command::SetSection { section, on } => {
+                            self.sections.insert(section, on);
+                            self.coll_line(&collector::on_off(section, on)).await;
+                        }
+                        Command::Now(s) => self.coll_line(&collector::now(s)).await,
+                        Command::Throttle(t) => {
+                            self.throttle = t;
+                            for l in collector::tiers(t) {
+                                self.coll_line(&l).await;
+                            }
+                        }
+                        Command::SetServices(u) => {
+                            self.services = u;
+                            let l = collector::svc(&self.services);
+                            self.coll_line(&l).await;
+                        }
+                        Command::SudoPassword(Some(pw)) => self.check_sudo(&handle, pw),
+                        Command::SudoPassword(None) => {
+                            self.sudo_skipped = true;
+                            self.set_sudo(SudoMode::None);
+                        }
+                        Command::SudoAsk => {
+                            self.sudo_skipped = false;
+                            self.sudo_attempts = 0;
+                            self.ask_sudo(true);
+                        }
                         Command::Disconnect => {
                             let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
-                            self.drop_writers();
+                            self.end_session();
                             return End::UserDisconnect;
                         }
                         Command::Shutdown => {
+                            if let Some(w) = &self.collector {
+                                remote::send_line(w, "QUIT").await;
+                            }
                             let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
                             return End::Shutdown;
                         }
                         other => { let _ = self.absorb(other); }
                     }
                 }
-                i = self.internal_rx.recv() => {
-                    if let Some(Internal::PtyEnded { pty, generation, exit }) = i {
+                i = self.internal_rx.recv() => match i {
+                    Some(Internal::PtyEnded { pty, generation, exit }) => {
                         // Only the channel currently serving this tab counts.
                         let current = self.ptys.get(&pty).is_some_and(|p| p.generation == generation && p.writer.is_some());
                         if current && handle.is_closed() {
-                            self.drop_writers();
+                            self.end_session();
                             return End::Lost;
                         }
                         if let Some(p) = self.ptys.get_mut(&pty).filter(|_| current) {
@@ -726,10 +840,63 @@ impl Actor {
                             self.emit_link();
                         }
                     }
+                    Some(Internal::Probed(Ok(p))) => self.on_probe(&handle, p),
+                    Some(Internal::Probed(Err(e))) => {
+                        self.emit(EventKind::Error(format!("Host probe failed ({e}) — live metrics are off")));
+                    }
+                    Some(Internal::SudoChecked { password, result }) => self.on_sudo_checked(password, result),
+                    Some(Internal::CollectorStarted { generation, result }) => {
+                        if generation == self.collector_gen {
+                            match result {
+                                Ok(w) => {
+                                    let sections: Vec<(Section, bool)> =
+                                        self.sections.iter().map(|(&s, &on)| (s, on)).collect();
+                                    let lines = collector::tiers(self.throttle)
+                                        .into_iter()
+                                        .chain(collector::replay(&sections, &self.services));
+                                    for l in lines {
+                                        remote::send_line(&w, &l).await;
+                                    }
+                                    // First RTT sample right away instead of after the 10 s ping tick.
+                                    remote::send_line(&w, &collector::ping(self.clock.elapsed().as_millis() as u64)).await;
+                                    self.collector = Some(w);
+                                    self.emit_link();
+                                }
+                                Err(e) => self.emit(EventKind::Error(format!("Could not start the collector: {e}"))),
+                            }
+                        }
+                    }
+                    None => return End::Shutdown,
+                },
+                m = self.coll_rx.recv() => match m {
+                    Some(CollectorMsg::Rtt(ms)) => {
+                        self.link.rtt_ms = Some(ms);
+                        self.emit_link();
+                    }
+                    Some(CollectorMsg::Overhead(bps)) => {
+                        self.link.overhead_bps = bps;
+                        self.emit_link();
+                    }
+                    Some(CollectorMsg::Ended { generation })
+                        if generation == self.collector_gen && self.collector.is_some() =>
+                    {
+                        self.collector = None;
+                        self.emit_link();
+                        if !handle.is_closed() {
+                            self.emit(EventKind::Error("Live metrics stopped: the collector exited".into()));
+                        }
+                    }
+                    // A collector from an earlier session, or already gone.
+                    Some(CollectorMsg::Ended { .. }) | None => {}
+                },
+                _ = ping.tick() => {
+                    if let Some(w) = &self.collector {
+                        remote::send_line(w, &collector::ping(self.clock.elapsed().as_millis() as u64)).await;
+                    }
                 }
                 _ = tick.tick() => {
                     if handle.is_closed() {
-                        self.drop_writers();
+                        self.end_session();
                         return End::Lost;
                     }
                 }
@@ -737,20 +904,137 @@ impl Actor {
         }
     }
 
-    fn drop_writers(&mut self) {
+    async fn coll_line(&self, line: &str) {
+        if let Some(w) = &self.collector {
+            remote::send_line(w, line).await;
+        }
+    }
+
+    fn on_probe(&mut self, handle: &Arc<Handle<Client>>, p: Probe) {
+        self.emit(EventKind::Probe(p.clone()));
+        let mode = if p.is_root() {
+            SudoMode::Root
+        } else if p.sudo_n {
+            SudoMode::NoPasswd
+        } else if self.sudo_password.is_some() {
+            SudoMode::Password // entered earlier this host session (reconnect)
+        } else {
+            SudoMode::None
+        };
+        let has_bash = p.bash.is_some();
+        self.probe = Some(p);
+        self.set_sudo(mode);
+        self.ask_sudo(false);
+
+        if !has_bash {
+            self.emit(EventKind::Error(
+                "bash is not installed on this host — live metrics need bash".into(),
+            ));
+            return;
+        }
+        let generation = self.collector_gen;
+        let (h, tx, msgs) = (
+            handle.clone(),
+            self.internal_tx.clone(),
+            self.coll_tx.clone(),
+        );
+        let (throttle, clock, shared) = (self.throttle, self.clock, self.shared.clone());
+        tokio::spawn(async move {
+            let emit = move |evs: Vec<EventKind>| shared.emit_batch(evs);
+            let result = remote::start_collector(&h, throttle, generation, clock, emit, msgs).await;
+            let _ = tx.send(Internal::CollectorStarted { generation, result });
+        });
+    }
+
+    /// Prompt for the sudo password when privileged access needs one (protocol §9).
+    fn ask_sudo(&self, explicit: bool) {
+        let Some(p) = &self.probe else { return };
+        if p.is_root() || p.sudo_n || self.sudo_password.is_some() || self.sudo_checking {
+            return;
+        }
+        if !p.sudo {
+            if explicit {
+                self.emit(EventKind::Error(
+                    "sudo is not installed on this host".into(),
+                ));
+            }
+            return;
+        }
+        if self.sudo_skipped || self.sudo_attempts >= SUDO_ATTEMPTS {
+            return;
+        }
+        self.emit(EventKind::SudoPrompt {
+            message: None,
+            attempts_left: SUDO_ATTEMPTS - self.sudo_attempts,
+        });
+    }
+
+    fn check_sudo(&mut self, handle: &Arc<Handle<Client>>, password: SecretString) {
+        if self.sudo_checking {
+            return;
+        }
+        self.sudo_checking = true;
+        let (h, tx) = (handle.clone(), self.internal_tx.clone());
+        tokio::spawn(async move {
+            let result = remote::verify_sudo(&h, &password).await;
+            let _ = tx.send(Internal::SudoChecked { password, result });
+        });
+    }
+
+    fn on_sudo_checked(&mut self, password: SecretString, result: Result<bool, String>) {
+        self.sudo_checking = false;
+        match result {
+            Ok(true) => {
+                self.sudo_password = Some(password);
+                self.sudo_attempts = 0;
+                self.set_sudo(SudoMode::Password);
+            }
+            Ok(false) => {
+                self.sudo_attempts += 1;
+                if self.sudo_attempts >= SUDO_ATTEMPTS {
+                    self.set_sudo(SudoMode::None);
+                    self.emit(EventKind::Error(
+                        "sudo rejected the password 3 times — privileged panels stay off (retry from the status bar)".into(),
+                    ));
+                } else {
+                    self.emit(EventKind::SudoPrompt {
+                        message: Some("Wrong password".into()),
+                        attempts_left: SUDO_ATTEMPTS - self.sudo_attempts,
+                    });
+                }
+            }
+            Err(e) => {
+                self.set_sudo(SudoMode::None);
+                self.emit(EventKind::Error(format!(
+                    "Could not check the sudo password: {e}"
+                )));
+            }
+        }
+    }
+
+    fn set_sudo(&mut self, mode: SudoMode) {
+        self.sudo_mode = mode;
+        self.emit(EventKind::Sudo(mode));
+    }
+
+    /// Connection gone: drop channel writers; stale reader messages are ignored by generation.
+    fn end_session(&mut self) {
         for p in self.ptys.values_mut() {
             p.writer = None;
         }
+        self.collector = None;
+        self.collector_gen += 1;
+        self.link.rtt_ms = None;
+        self.link.overhead_bps = 0.0;
         self.emit_link();
     }
 
-    /// Status-bar channel count (open PTY channels; collector/log channels join in M2/M4).
+    /// Status-bar link numbers: open PTY channels + collector.
     fn emit_link(&self) {
-        let channels = self.ptys.values().filter(|p| p.writer.is_some()).count() as u32;
-        self.emit(EventKind::Link(sw_core::model::LinkStats {
-            rtt_ms: None,
-            overhead_bps: 0.0,
-            channels,
+        let ptys = self.ptys.values().filter(|p| p.writer.is_some()).count() as u32;
+        self.emit(EventKind::Link(LinkStats {
+            channels: ptys + u32::from(self.collector.is_some()),
+            ..self.link
         }));
     }
 }

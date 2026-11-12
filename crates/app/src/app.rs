@@ -19,7 +19,9 @@ use sw_ssh::api::{
 use sw_ssh::{Event, HostHandle, Net, Waker, spawn_demo_host};
 use sw_term::{Size, TermEvent, Terminal, TerminalView};
 
-use crate::dialogs::{AuthOutcome, AuthPrompt, ConnectDialog, ConnectOutcome, HostKeyPrompt};
+use crate::dialogs::{
+    AuthOutcome, AuthPrompt, ConnectDialog, ConnectOutcome, HostKeyPrompt, SudoOutcome, SudoPrompt,
+};
 use crate::panels::terminal::{Banner, TermTab};
 use crate::panels::{dock, status, system, terminal, topbar, watch};
 use crate::state::{DockTab, HostUi, HostView};
@@ -37,6 +39,7 @@ struct HostEntry {
     active_tab: usize,
     next_pty: PtyId,
     key_prompt: Option<HostKeyPrompt>,
+    sudo_prompt: Option<SudoPrompt>,
     auth_prompt: Option<AuthPrompt>,
     last_error: Option<String>,
 }
@@ -101,6 +104,8 @@ pub struct SecureWireApp {
     connect: ConnectDialog,
     palette: sw_term::Palette,
     term_focused: bool,
+    /// `SW_FRAME_STATS=<file>`: append frames-per-10s lines (perf diagnostics).
+    frame_stats: Option<(std::path::PathBuf, Instant, u32)>,
 }
 
 impl SecureWireApp {
@@ -135,6 +140,7 @@ impl SecureWireApp {
             connect: ConnectDialog::default(),
             palette: theme::terminal_palette(),
             term_focused: false,
+            frame_stats: std::env::var_os("SW_FRAME_STATS").map(|p| (p.into(), Instant::now(), 0)),
         };
         if demo {
             let id = app.alloc_id();
@@ -176,6 +182,7 @@ impl SecureWireApp {
             active_tab: 0,
             next_pty: 1,
             key_prompt: None,
+            sudo_prompt: None,
             auth_prompt: None,
             last_error: None,
         });
@@ -243,6 +250,13 @@ impl SecureWireApp {
                         .as_ref()
                         .map_or(h.view.name.clone(), |c| c.address.clone());
                     h.key_prompt = Some(HostKeyPrompt::new(host, algorithm, fingerprint, status));
+                }
+                EventKind::SudoPrompt {
+                    message,
+                    attempts_left,
+                } => {
+                    h.sudo_prompt =
+                        Some(SudoPrompt::new(h.view.name.clone(), message, attempts_left));
                 }
                 EventKind::AuthFailed(msg) => {
                     let (method, key) = h
@@ -331,7 +345,8 @@ impl SecureWireApp {
         }
     }
 
-    /// Focus-aware throttling (protocol §5).
+    /// Focus-aware throttling (protocol §5): the active host follows the window
+    /// (focused / unfocused / minimized); every other host tab runs Hidden.
     fn update_throttle(&mut self, ui: &Ui) {
         let (focused, minimized) = ui.input(|i| {
             (
@@ -339,20 +354,28 @@ impl SecureWireApp {
                 i.viewport().minimized.unwrap_or(false),
             )
         });
-        let t = if minimized {
+        self.throttle = if minimized {
             Throttle::Hidden
         } else if !focused {
             Throttle::Background
         } else {
             Throttle::Normal
         };
-        if t != self.throttle {
-            let was_slower = self.throttle != Throttle::Normal;
-            self.throttle = t;
-            for h in &self.hosts {
+        let active = self.active;
+        for (i, h) in self.hosts.iter_mut().enumerate() {
+            let t = if i == active {
+                self.throttle
+            } else {
+                Throttle::Hidden
+            };
+            if h.ui.sent_throttle != Some(t) {
+                let was_slower = h.ui.sent_throttle.is_some_and(|p| p != Throttle::Normal);
+                h.ui.sent_throttle = Some(t);
                 h.handle.send(Command::Throttle(t));
                 if was_slower && t == Throttle::Normal {
+                    // Fresh numbers immediately instead of at the next tick.
                     h.handle.send(Command::Now(Section::Cpu));
+                    h.handle.send(Command::Now(Section::Mem));
                 }
             }
         }
@@ -403,6 +426,20 @@ impl SecureWireApp {
             if let Some(d) = p.show(ctx) {
                 h.handle.send(Command::HostKey(d));
                 h.key_prompt = None;
+            }
+            return;
+        }
+        if let Some(p) = &mut h.sudo_prompt {
+            match p.show(ctx) {
+                SudoOutcome::Submit(pw) => {
+                    h.handle.send(Command::SudoPassword(Some(pw)));
+                    h.sudo_prompt = None;
+                }
+                SudoOutcome::Skip => {
+                    h.handle.send(Command::SudoPassword(None));
+                    h.sudo_prompt = None;
+                }
+                SudoOutcome::None => {}
             }
             return;
         }
@@ -472,20 +509,32 @@ impl SecureWireApp {
     }
 }
 
-fn pending_panel(ui: &mut Ui, title: &str) {
+fn pending_panel(ui: &mut Ui, title: &str, text: &str) {
     crate::panels::panel_header(ui, title, |_| {});
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.add_space(12.0);
-        ui.vertical(|ui| {
-            ui.label(w::dim("Live metrics arrive with the collector (M2)."));
-            ui.label(w::faint("This connection already carries the terminal; the collector will run as another channel on it."));
-        });
+        ui.label(w::dim(text));
     });
 }
 
 impl eframe::App for SecureWireApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        if let Some((path, since, n)) = &mut self.frame_stats {
+            *n += 1;
+            if since.elapsed() >= Duration::from_secs(10) {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&*path)
+                {
+                    let _ = writeln!(f, "{} frames in {:.1}s", n, since.elapsed().as_secs_f32());
+                }
+                *since = Instant::now();
+                *n = 0;
+            }
+        }
         self.drain();
         self.shortcuts(ui);
         self.update_throttle(ui);
@@ -549,10 +598,14 @@ impl eframe::App for SecureWireApp {
             return;
         };
 
-        Panel::bottom("status")
+        let ask_sudo = Panel::bottom("status")
             .exact_size(24.0)
             .frame(bar(BG2))
-            .show(ui, |ui| status::show(ui, &h.view, throttle));
+            .show(ui, |ui| status::show(ui, &h.view, throttle))
+            .inner;
+        if ask_sudo {
+            h.handle.send(Command::SudoAsk);
+        }
 
         if self.layout.left {
             Panel::left("system")
@@ -561,10 +614,10 @@ impl eframe::App for SecureWireApp {
                 .size_range(200.0..=480.0)
                 .frame(bar(BG1))
                 .show(ui, |ui| {
-                    if h.demo {
+                    if h.demo || h.view.probe.is_some() {
                         system::show(ui, &h.view, &mut h.ui)
                     } else {
-                        pending_panel(ui, "SYSTEM")
+                        pending_panel(ui, "SYSTEM", "Probing the host…")
                     }
                 });
         }
@@ -576,7 +629,7 @@ impl eframe::App for SecureWireApp {
                 .frame(bar(BG1))
                 .show(ui, |ui| {
                     if !h.demo {
-                        pending_panel(ui, "WATCH");
+                        pending_panel(ui, "WATCH", "Services, firewall and security arrive in M3.");
                     } else if let watch::Action::RefreshServices =
                         watch::show(ui, &h.view, &mut h.ui)
                     {
@@ -609,7 +662,10 @@ impl eframe::App for SecureWireApp {
         let fallback = format!("{user}@{}", h.view.name);
         let pal = &self.palette;
         let mut term_focused = false;
-        let modal_open = self.connect.open || h.key_prompt.is_some() || h.auth_prompt.is_some();
+        let modal_open = self.connect.open
+            || h.key_prompt.is_some()
+            || h.auth_prompt.is_some()
+            || h.sudo_prompt.is_some();
         CentralPanel::no_frame().frame(bar(BG0)).show(ui, |ui| {
             if h.demo {
                 terminal::demo_screen(ui, &h.view.name, &user);
@@ -696,8 +752,8 @@ impl SecureWireApp {
         // Data arrival drives repaints. Only when samples stop arriving on a host that has a
         // collector do we tick once per second so stale ages keep counting.
         let fast = self.throttle.tiers().0 as f32;
-        if let Some(h) = self.hosts.get(self.active).filter(|h| h.demo)
-            && h.view.age_s(Section::Cpu).is_none_or(|a| a > fast + 1.0)
+        if let Some(h) = self.hosts.get(self.active)
+            && h.view.age_s(Section::Cpu).is_some_and(|a| a > fast + 1.0)
         {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }

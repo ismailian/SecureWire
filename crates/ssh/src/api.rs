@@ -171,6 +171,10 @@ pub enum Command {
     ClosePty(PtyId),
     /// Answer to [`EventKind::HostKeyPrompt`].
     HostKey(KeyDecision),
+    /// Answer to [`EventKind::SudoPrompt`]: `None` = skip (no privileged features).
+    SudoPassword(Option<SecretString>),
+    /// Ask for the sudo password again (status bar → "no sudo").
+    SudoAsk,
     /// Reconnect now, optionally with new credentials.
     Retry(Option<AuthSpec>),
     Disconnect,
@@ -194,6 +198,14 @@ pub enum EventKind {
         pty: PtyId,
         exit: Option<u32>,
     },
+    /// Capabilities from the probe (protocol §4).
+    Probe(sw_core::parse::Probe),
+    /// Privileged features need a sudo password (protocol §9).
+    SudoPrompt {
+        message: Option<String>,
+        attempts_left: u8,
+    },
+    Sudo(SudoMode),
     Static(HostStatic),
     Cpu(CpuSample),
     Mem(MemSample),

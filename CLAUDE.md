@@ -3,9 +3,9 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** M1 done (2026-11-12) — real SSH: connect dialog, host-key TOFU, key/password/agent auth, multi-tab PTY terminal on one connection, reconnect. Panels show live data only for `--demo` until the collector lands. Not yet verified on a real VPS (vim/htop/tmux). Next: M2 (probe, sudo, collector).
+**Status:** M2 done (2026-11-12) — probe, sudo password flow, and the bash collector streaming live CPU / memory / network / disk / sessions / processes over the same SSH connection into the SYSTEM panel, Alerts and Processes tabs. Tested against a fake host under local bash (no real VPS yet). Next: M3 (services, firewall, security).
 
-Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB.
+Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB.
 
 ---
 
@@ -23,7 +23,7 @@ Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 %
 ## 2. Non-negotiables
 
 1. **One SSH connection per host.** Terminal tabs, collector, log tails and one-shot actions are *channels* on that connection. Never open a second TCP connection or shell out to `ssh`.
-2. **Nothing installed or written on the server.** The collector is a bash script passed as the exec command. Its stdin is the control channel.
+2. **Nothing installed or written on the server.** The collector is a bash script streamed on the stdin of `exec bash -s …`; after the script's last line, the same stdin is the control channel (D-022).
 3. **Pay only for what is visible.** Collapsed sections, hidden panels, unfocused/minimized windows and inactive host tabs reduce or stop collection (protocol §5). Every new section must support `ON`/`OFF`/`NOW`.
 4. **The UI thread never blocks and never parses.** No I/O, no locks held across await points, no regex compilation, no allocation-heavy work in `update()`. Data arrives as ready-to-draw structs.
 5. **No continuous repaint.** eframe runs reactive. Repaints come from input, from the net thread (`request_repaint`, throttled), and from a 1 s `request_repaint_after` only while collector data is stale. The terminal cursor does not blink (D-019).
@@ -72,18 +72,22 @@ crates/
     src/alerts.rs          # threshold rules → Vec<Alert>
     src/shell.rs           # shell_quote(), is_valid_unit(), is_valid_path()
     src/format.rs          # bytes / rate / duration formatting rules
+    src/parse/probe.rs     # probe.sh key=value output → Probe
     src/config.rs          # hosts.toml types (HostConfig, HostsFile) — no I/O
   ssh/   securewire-ssh (lib sw_ssh) — net side
     src/api.rs             # Command / Event / EventKind / SudoMode / Throttle: the UI↔net contract
     src/pipeline.rs        # Frame → EventKind (trackers, alerts); shared by the demo and the real actor
     src/demo.rs            # fake server: byte-exact collector output through the real decoder + pipeline
+    src/collector.rs       # embedded collector.sh / probe.sh, launch command, control-line builders
+    src/remote.rs          # exec channels: run_probe, verify_sudo, start_collector (reader + 30 ms packet coalescing)
     src/actor.rs           # russh HostActor: connect, host-key TOFU, auth, PTY channels, keepalive, reconnect
     src/handle.rs          # HostHandle / CmdTx (same handle for demo and real hosts)
     src/lib.rs             # Net: the net thread + Net::connect()
     tests/connect.rs       # end-to-end tests of the real actor against tests/support (in-process russh server)
+    tests/collector.rs     # the real collector.sh under local bash vs a fake host (fake /proc + stub commands)
+    tests/support/fakehost.rs  # that fake host; the test SSH server runs exec requests inside it
                            # test keys are generated per run (temp dir); no private keys in the repo
     examples/dev_sshd.rs   # the same fake server on 127.0.0.1:2222 for manual GUI testing
-                           # [M2: probe.rs, sudo.rs, collector driver]
   app/   securewire (bin) — eframe App
     src/main.rs, app.rs    # NativeOptions (glow), event drain, panel order, section ON/OFF diffing, focus throttle
     src/theme.rs           # tokens + Visuals + fonts — the only place colors are constructed
@@ -94,7 +98,7 @@ crates/
     src/panels/            # topbar, status, system (left), watch (right), dock (bottom), terminal (central)
   term/  securewire-term (lib sw_term) — Terminal (alacritty_terminal + VT parser behind a FairMutex),
                            # TerminalView egui widget (renderer, keys, mouse, selection, clipboard), input.rs (xterm key encoding)
-[M2] collector/            # collector.sh, probe.sh — include_str!, no single quotes, shellcheck-clean
+collector/             # collector.sh (bash), probe.sh (POSIX sh) — embedded with include_str!; collector ends with `main "$@"`
 design/                    # see §1
 ```
 
@@ -225,7 +229,9 @@ cargo run -p securewire -- --demo             # app fed by recorded collector fr
 cargo test --workspace                        # unit + fixture tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-shellcheck -s bash collector/collector.sh collector/probe.sh
+shellcheck -s bash collector/collector.sh && shellcheck -s sh collector/probe.sh   # not installed on the dev machine yet
+cargo test -p securewire-ssh --test collector  # collector.sh under local bash (Git Bash on Windows; SW_TEST_BASH overrides)
+SW_FRAME_STATS=frames.txt cargo run --release -p securewire   # append repaints-per-10s to a file (perf checks)
 cargo run -p securewire -- --connect user@host[:port] [--key PATH]   # pre-filled Connect dialog
 cargo run -p securewire-ssh --example dev_sshd # local fake SSH server: 127.0.0.1:2222, tester / securewire-test
 cargo test -p securewire-ssh --test connect   # real actor vs in-process server (no Docker, no VPS)
@@ -235,7 +241,7 @@ cargo test -p securewire-ssh --test connect   # real actor vs in-process server 
 
 - **Parsers (`core`)**: table-driven tests over `tests/fixtures/<distro>/` captured from real machines, including edge cases (many cores, no swap, IPv6-only, `ufw inactive`, `fail2ban` not installed, unit names with `@`, non-UTF-8 log bytes).
 - **Frame decoder**: fuzz-style tests for partial reads, frames split across packets, missing `END`, `SAME`, `ERR`.
-- **Collector script**: shellcheck; a test asserts it contains no `'`; integration test runs it in a container and checks every section emits a parseable frame.
+- **Collector script**: runs for real under a local bash against a fake host (`tests/collector.rs`): every section parses, rates are right, OFF/NOW/TIER/SVC/PING/QUIT, garbage and injection attempts ignored, EOF ends it, missing `/proc` files give `ERR`. A unit test asserts the script ends with the `main` call. shellcheck still to be added (not installed here).
 - **Command building**: every action template tested with hostile inputs (spaces, quotes, `;`, `$()`, newlines) — must be rejected or safely quoted.
 - **Demo mode** (`--demo`) replays recorded frames and log lines; use it for UI work and screenshots instead of a live server.
 - **Perf**: a `--bench-ui` flag that runs the demo at 50 log lines/s and prints frame-time percentiles.
@@ -255,7 +261,7 @@ cargo test -p securewire-ssh --test connect   # real actor vs in-process server 
 |---|---|---|
 | **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. Open: Inter + JetBrains Mono not embedded yet (egui default fonts in use) |
 | **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** vim/htop/tmux on a real VPS; ssh-agent path untested (agent service disabled on dev machine) |
-| **M2** | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling, status bar | Matches protocol §8 targets on a real VPS |
+| **M2** ✅ | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling (inactive host tabs run Hidden), status bar | Done 2026-11-12 against a fake host (3 collector tests + full SSH e2e test + GUI check). **Open:** real-VPS check of §8 targets; sh fallback for hosts without bash; shellcheck |
 | **M3** | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Service failure shows within 1 s in Live mode |
 | **M4** | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | 50 lines/s stays < 4 ms/frame |
 | **M5** | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts | Daily-driver for 3 hosts |

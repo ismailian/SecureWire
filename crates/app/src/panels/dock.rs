@@ -106,6 +106,16 @@ fn tabs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi, hide: &mut bool) {
 }
 
 fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
+    if v.sources.is_empty() {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(w::faint(
+                "No log sources yet — choosing and tailing logs arrives in M4.",
+            ));
+        });
+        return;
+    }
     // ---- toolbar ----
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(8, 5))

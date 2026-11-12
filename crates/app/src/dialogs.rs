@@ -528,3 +528,66 @@ fn is_empty_secret(s: &SecretString) -> bool {
     use secrecy::ExposeSecret;
     s.expose_secret().is_empty()
 }
+
+// ─────────────────────────────── Sudo password ───────────────────────────────
+
+pub struct SudoPrompt {
+    pub host: String,
+    message: Option<String>,
+    attempts_left: u8,
+    secret: String,
+    focus: bool,
+}
+
+pub enum SudoOutcome {
+    None,
+    Submit(SecretString),
+    Skip,
+}
+
+impl SudoPrompt {
+    pub fn new(host: String, message: Option<String>, attempts_left: u8) -> Self {
+        Self {
+            host,
+            message,
+            attempts_left,
+            secret: String::new(),
+            focus: true,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> SudoOutcome {
+        modal(ctx, "sudo", "Sudo password", ph::SHIELD_WARNING, 480.0, |ui| {
+            ui.label(format!(
+                "Some panels (firewall, fail2ban, root-only logs) and service actions need sudo on {}.",
+                self.host
+            ));
+            if let Some(m) = &self.message {
+                ui.label(RichText::new(format!("{} {m} — {} attempt(s) left", ph::WARNING, self.attempts_left)).color(WARN));
+            }
+            field(ui, "Password", |ui| {
+                let r = ui.add(TextEdit::singleline(&mut self.secret).password(true).desired_width(f32::INFINITY));
+                if self.focus {
+                    r.request_focus();
+                    self.focus = false;
+                }
+            });
+            let mut out = SudoOutcome::None;
+            ui.horizontal(|ui| {
+                ui.label(w::faint("Kept in memory for this session only — never saved."));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.secret.is_empty();
+                    let ok = ui.add_enabled(!self.secret.is_empty(), egui::Button::new(RichText::new("Verify").color(BG0)).fill(ACC));
+                    if ok.clicked() || enter {
+                        out = SudoOutcome::Submit(SecretString::from(std::mem::take(&mut self.secret)));
+                    }
+                    if ui.button("Skip").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        out = SudoOutcome::Skip;
+                    }
+                });
+            });
+            out
+        })
+        .unwrap_or(SudoOutcome::None)
+    }
+}

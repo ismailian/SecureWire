@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 mod actor;
 pub mod api;
+pub mod collector;
 pub mod demo;
 pub mod handle;
 pub mod pipeline;
+mod remote;
 
 pub use api::{Command, Event, EventKind, HostId};
 pub use demo::spawn_demo_host;

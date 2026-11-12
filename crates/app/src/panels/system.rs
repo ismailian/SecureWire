@@ -76,7 +76,7 @@ fn host(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
                     right(ui, |ui| match i.sudo {
                         SudoMode::Root => w::badge(ui, "root", OK, OK_DIM),
                         SudoMode::NoPasswd => w::badge(ui, "sudo nopasswd", OK, OK_DIM),
-                        SudoMode::Password => w::badge(ui, "sudo ✓", OK, OK_DIM),
+                        SudoMode::Password => w::badge(ui, "sudo ok", OK, OK_DIM),
                         SudoMode::None => w::badge(ui, "no sudo", WARN, WARN_DIM),
                         SudoMode::Unknown => w::badge(ui, "not probed", TX2, BG3),
                     });

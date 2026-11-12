@@ -372,3 +372,108 @@ fn slow_host_key_answer_does_not_time_out() {
         matches!(e, EventKind::Connected(_))
     });
 }
+
+#[test]
+fn probe_sudo_and_live_collector_over_ssh() {
+    use support::fakehost::{FakeHost, SUDO_PASSWORD};
+    let Some(host) = FakeHost::new("e2e") else {
+        eprintln!("SKIP: no bash found (set SW_TEST_BASH)");
+        return;
+    };
+    let srv = support::start_with_exec(support::ExecEnv {
+        bash: host.bash().into(),
+        env: host.env(),
+    });
+    let f = connect(srv.port, password(), TempDir::new("m2"));
+
+    // Probe: non-root user with sudo that needs a password.
+    let EventKind::Probe(p) = wait_for(&f, KeyDecision::Once, |e| matches!(e, EventKind::Probe(_)))
+    else {
+        unreachable!()
+    };
+    assert_eq!(p.uid, Some(1000));
+    assert!(
+        p.bash.is_some() && p.sudo && !p.sudo_n && p.complete,
+        "{p:?}"
+    );
+
+    // Sudo flow (protocol §9): wrong password → retry prompt, right one → Password mode.
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(
+            e,
+            EventKind::SudoPrompt {
+                attempts_left: 3,
+                ..
+            }
+        )
+    });
+    f.host
+        .send(Command::SudoPassword(Some(SecretString::from("wrong"))));
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(
+            e,
+            EventKind::SudoPrompt {
+                message: Some(_),
+                ..
+            }
+        )
+    });
+    assert!(
+        matches!(
+            ev,
+            EventKind::SudoPrompt {
+                attempts_left: 2,
+                ..
+            }
+        ),
+        "{ev:?}"
+    );
+    f.host.send(Command::SudoPassword(Some(SecretString::from(
+        SUDO_PASSWORD,
+    ))));
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Sudo(sw_ssh::api::SudoMode::Password))
+    });
+
+    // Collector frames arrive as ready-to-draw events.
+    wait_for(
+        &f,
+        KeyDecision::Once,
+        |e| matches!(e, EventKind::Static(h) if h.hostname == "fake-vps"),
+    );
+    wait_for(
+        &f,
+        KeyDecision::Once,
+        |e| matches!(e, EventKind::Mounts(m) if m.len() == 2),
+    );
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Processes(_))
+    });
+    host.tick();
+    f.host.send(Command::Now(sw_core::Section::Cpu));
+    let EventKind::Cpu(c) = wait_for(&f, KeyDecision::Once, |e| matches!(e, EventKind::Cpu(_)))
+    else {
+        unreachable!()
+    };
+    assert!((c.total - 33.3).abs() < 1.0, "{c:?}");
+    // Status bar numbers: the collector counts as a channel and PONG gives an RTT.
+    wait_for(
+        &f,
+        KeyDecision::Once,
+        |e| matches!(e, EventKind::Link(l) if l.rtt_ms.is_some() && l.channels >= 1),
+    );
+
+    // Visibility: OFF stops a section at the collector.
+    f.host.send(Command::SetSection {
+        section: sw_core::Section::Who,
+        on: false,
+    });
+    f.host
+        .send(Command::SetServices(vec!["redis-server.service".into()]));
+    let EventKind::Services(s) = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Services(_))
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(s[0].id, "redis-server.service");
+}
