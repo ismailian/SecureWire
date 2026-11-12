@@ -1,0 +1,19 @@
+[package]
+name = "securewire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SecureWire desktop app (egui)."
+
+[[bin]]
+name = "securewire"
+path = "src/main.rs"
+
+[dependencies]
+sw-core.workspace = true
+sw-ssh.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-phosphor.workspace = true
+regex-lite.workspace = true

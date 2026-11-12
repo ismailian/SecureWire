@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/ssh", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+
+[workspace.dependencies]
+sw-core = { path = "crates/core", package = "securewire-core" }
+sw-ssh = { path = "crates/ssh", package = "securewire-ssh" }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence", "x11", "wayland", "accesskit"] }
+egui = "0.36"
+egui-phosphor = { version = "0.14", default-features = false, features = ["regular"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+memchr = "2"
+regex-lite = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"   # must match alacritty_terminal (its FairMutex guards are parking_lot 0.12)
+
+# ---- build profiles (user preference: fast, small builds) ----
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 2        # egui and friends are slow unoptimized; our own crates stay at 0
+
+[profile.dev.build-override]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

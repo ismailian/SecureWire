@@ -1,0 +1,14 @@
+[package]
+name = "securewire-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure logic for SecureWire: collector frames, parsers, metrics, logs, alerts. No I/O, no UI."
+
+[lib]
+name = "sw_core"
+doctest = false
+
+[dependencies]
+memchr.workspace = true
