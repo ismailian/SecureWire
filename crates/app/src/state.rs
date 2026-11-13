@@ -104,6 +104,7 @@ pub struct HostView {
     pub auth: Option<sw_core::model::AuthStats>,
     pub scheduled: Option<sw_core::model::Scheduled>,
     pub units: Vec<sw_core::model::UnitInfo>,
+    pub log_candidates: Vec<sw_core::logs::LogCandidate>,
     /// Live service mode is actually following the journal (vs. polling fallback).
     pub live_watching: bool,
 }
@@ -142,8 +143,15 @@ impl HostView {
             auth: None,
             scheduled: None,
             units: vec![],
+            log_candidates: vec![],
             live_watching: false,
         }
+    }
+
+    /// Change how many log lines are kept (drops what is held now).
+    pub fn set_log_cap(&mut self, cap: usize) {
+        self.logs = LogStore::new(cap.clamp(500, 200_000));
+        self.new_log_seqs.clear();
     }
 
     pub fn age_s(&self, s: Section) -> Option<f32> {
@@ -249,6 +257,7 @@ impl HostView {
             EventKind::Auth(a) => self.auth = Some(a),
             EventKind::Scheduled(s) => self.scheduled = Some(s),
             EventKind::Units(u) => self.units = u,
+            EventKind::LogCandidates(c) => self.log_candidates = c,
             EventKind::ServiceMode { live_watching } => self.live_watching = live_watching,
             EventKind::Sudo(mode) => {
                 if let Some(i) = &mut self.info {
@@ -373,6 +382,8 @@ pub struct HostUi {
     pub sent_on: HashMap<Section, bool>,
     /// Last collection speed sent to this host (inactive host tabs run Hidden).
     pub sent_throttle: Option<sw_ssh::api::Throttle>,
+    /// Set by the logs toolbar / empty state; the app opens the log sources dialog.
+    pub want_log_dialog: bool,
 }
 
 impl Default for HostUi {
@@ -385,6 +396,7 @@ impl Default for HostUi {
             poll_secs: 30,
             sent_on: HashMap::new(),
             sent_throttle: None,
+            want_log_dialog: false,
         }
     }
 }

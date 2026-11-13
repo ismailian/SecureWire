@@ -16,7 +16,7 @@ use sw_core::logs::sanitize;
 use sw_ssh::api::{
     AuthSpec, Command, ConnState, ConnectSpec, EventKind, HostId, KnownHosts, PtyId, Throttle,
 };
-use sw_ssh::{Event, HostHandle, Net, Waker, spawn_demo_host};
+use sw_ssh::{Event, HostHandle, Net, Waker, spawn_demo_host_rate};
 use sw_term::{Size, TermEvent, Terminal, TerminalView};
 
 use crate::dialogs::{
@@ -41,6 +41,7 @@ struct HostEntry {
     key_prompt: Option<HostKeyPrompt>,
     sudo_prompt: Option<SudoPrompt>,
     picker: crate::dialogs::ServicePicker,
+    log_dialog: crate::dialogs::LogSourcesDialog,
     auth_prompt: Option<AuthPrompt>,
     last_error: Option<String>,
 }
@@ -107,10 +108,18 @@ pub struct SecureWireApp {
     term_focused: bool,
     /// `SW_FRAME_STATS=<file>`: append frames-per-10s lines (perf diagnostics).
     frame_stats: Option<(std::path::PathBuf, Instant, u32)>,
+    /// `--bench-ui`: demo host at 50 log lines/s, frame times → report file, then exit.
+    bench: Option<Bench>,
 }
 
 impl SecureWireApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, demo: bool, prefill: Option<HostConfig>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        demo: bool,
+        prefill: Option<HostConfig>,
+        bench: Option<std::path::PathBuf>,
+    ) -> Self {
+        let demo = demo || bench.is_some();
         theme::install(&cc.egui_ctx);
         let (events_tx, events) = mpsc::channel();
         let ctx = cc.egui_ctx.clone();
@@ -142,10 +151,16 @@ impl SecureWireApp {
             palette: theme::terminal_palette(),
             term_focused: false,
             frame_stats: std::env::var_os("SW_FRAME_STATS").map(|p| (p.into(), Instant::now(), 0)),
+            bench: bench.map(|out| Bench {
+                out,
+                start: Instant::now(),
+                ms: Vec::new(),
+            }),
         };
         if demo {
             let id = app.alloc_id();
-            let handle = spawn_demo_host(id, app.events_tx.clone(), app.wake.clone());
+            let rate = app.bench.as_ref().map(|_| 50.0);
+            let handle = spawn_demo_host_rate(id, app.events_tx.clone(), app.wake.clone(), rate);
             app.push_host(handle, "prod-web-01 (demo)", None, true);
         } else if let Some(h) = prefill {
             let saved = app
@@ -185,6 +200,7 @@ impl SecureWireApp {
             key_prompt: None,
             sudo_prompt: None,
             picker: Default::default(),
+            log_dialog: Default::default(),
             auth_prompt: None,
             last_error: None,
         });
@@ -238,8 +254,42 @@ impl SecureWireApp {
                     mode: c.services.mode,
                     poll_secs: c.services.poll_secs,
                 });
+                h.view.set_log_cap(c.log_cap as usize);
+                h.handle.send(Command::SetLogSources {
+                    sources: c.logs.clone(),
+                    backlog: c.log_backlog,
+                });
             }
             h.new_tab();
+        }
+    }
+
+    /// Apply and persist a host's log sources.
+    fn update_logs(
+        &mut self,
+        idx: usize,
+        sources: Vec<sw_core::config::LogSourceConfig>,
+        backlog: u32,
+        cap: u32,
+    ) {
+        let Some(h) = self.hosts.get_mut(idx) else {
+            return;
+        };
+        // Source indices change with the list, so lines already held would be mislabelled.
+        h.view.set_log_cap(cap as usize);
+        h.ui.filter.dirty = true;
+        h.handle.send(Command::SetLogSources {
+            sources: sources.clone(),
+            backlog,
+        });
+        let Some(c) = &mut h.config else { return };
+        c.logs = sources;
+        c.log_backlog = backlog;
+        c.log_cap = cap;
+        let c = c.clone();
+        self.saved.upsert(c);
+        if let Err(e) = self.store.save_hosts(&self.saved) {
+            self.toast(format!("Could not save hosts.toml: {e}"));
         }
     }
 
@@ -481,6 +531,19 @@ impl SecureWireApp {
         let Some(h) = self.hosts.get_mut(self.active) else {
             return;
         };
+        if h.log_dialog.open {
+            let (cands, name) = (h.view.log_candidates.clone(), h.view.name.clone());
+            if let crate::dialogs::LogsOutcome::Apply {
+                sources,
+                backlog,
+                cap,
+            } = h.log_dialog.show(ctx, &cands, &name)
+            {
+                let idx = self.active;
+                self.update_logs(idx, sources, backlog, cap);
+            }
+            return;
+        }
         if h.picker.open {
             let (units, name) = (h.view.units.clone(), h.view.name.clone());
             if let crate::dialogs::PickerOutcome::Apply {
@@ -592,6 +655,7 @@ fn pending_panel(ui: &mut Ui, title: &str, text: &str) {
 
 impl eframe::App for SecureWireApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let frame_start = Instant::now();
         if let Some((path, since, n)) = &mut self.frame_stats {
             *n += 1;
             if since.elapsed() >= Duration::from_secs(10) {
@@ -758,6 +822,7 @@ impl eframe::App for SecureWireApp {
         let mut term_focused = false;
         let modal_open = self.connect.open
             || h.picker.open
+            || h.log_dialog.open
             || h.key_prompt.is_some()
             || h.auth_prompt.is_some()
             || h.sudo_prompt.is_some();
@@ -817,6 +882,18 @@ impl eframe::App for SecureWireApp {
             }
         });
         self.term_focused = term_focused;
+        if let Some(h) = self
+            .hosts
+            .get_mut(self.active)
+            .filter(|h| h.ui.want_log_dialog)
+        {
+            h.ui.want_log_dialog = false;
+            let (cur, backlog, cap) = h.config.as_ref().map_or((vec![], 200, 10_000), |c| {
+                (c.logs.clone(), c.log_backlog, c.log_cap)
+            });
+            h.log_dialog.open_with(&cur, backlog, cap);
+            h.handle.send(Command::DiscoverLogs);
+        }
         if let Some(mode) = set_live {
             let (idx, poll) = (self.active, self.hosts[self.active].ui.poll_secs);
             self.update_services(idx, None, mode, poll);
@@ -825,6 +902,7 @@ impl eframe::App for SecureWireApp {
         self.sync_sections();
         self.dialogs(ui.ctx());
         self.finish(ui);
+        self.bench_tick(ui, frame_start);
     }
 }
 
@@ -856,5 +934,50 @@ impl SecureWireApp {
         {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
+    }
+}
+
+pub struct Bench {
+    out: std::path::PathBuf,
+    start: Instant,
+    /// Time spent building each frame (layout + tessellation input), ms.
+    ms: Vec<f32>,
+}
+
+impl SecureWireApp {
+    /// Record this frame; after 3 s warm-up and 20 s of samples, write the report and close.
+    fn bench_tick(&mut self, ui: &Ui, frame_start: Instant) {
+        let Some(b) = &mut self.bench else { return };
+        let t = b.start.elapsed();
+        if t > Duration::from_secs(3) {
+            b.ms.push(frame_start.elapsed().as_secs_f32() * 1000.0);
+        }
+        if t < Duration::from_secs(23) {
+            return;
+        }
+        let mut v = b.ms.clone();
+        v.sort_by(f32::total_cmp);
+        let pct = |p: f32| {
+            v.get(((v.len() as f32 - 1.0) * p).round() as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let lines = self
+            .hosts
+            .first()
+            .map_or(0, |h| h.view.logs.iter_seq().count());
+        let report = format!(
+            "SecureWire --bench-ui: demo host, 50 log lines/s, 20 s\nframes {}  ({:.1}/s)\nframe ms  p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}\nlog lines held {lines}\nbudget: < 4 ms per frame → {}\n",
+            v.len(),
+            v.len() as f32 / 20.0,
+            pct(0.5),
+            pct(0.95),
+            pct(0.99),
+            v.last().copied().unwrap_or(0.0),
+            if pct(0.99) < 4.0 { "PASS" } else { "FAIL" }
+        );
+        let _ = std::fs::write(&b.out, report);
+        self.bench = None;
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }

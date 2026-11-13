@@ -117,6 +117,9 @@ fn services(
                 service_row(ui, s);
             }
             ui.add_space(6.0);
+            if v.services.is_empty() {
+                return; // nothing watched → no mode footer
+            }
             ui.horizontal(|ui| match mode {
                 ServiceMode::Live if v.live_watching => {
                     w::dot(ui, OK);

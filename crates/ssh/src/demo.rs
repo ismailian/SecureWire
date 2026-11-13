@@ -26,10 +26,24 @@ use crate::pipeline::Pipeline;
 const CORES: usize = 4;
 
 pub fn spawn_demo_host(id: HostId, events: Sender<Event>, wake: Waker) -> HostHandle {
+    spawn_demo_host_rate(id, events, wake, None)
+}
+
+/// Like [`spawn_demo_host`], with a fixed log rate (lines per second) for `--bench-ui`.
+pub fn spawn_demo_host_rate(
+    id: HostId,
+    events: Sender<Event>,
+    wake: Waker,
+    logs_per_sec: Option<f64>,
+) -> HostHandle {
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
         .name(format!("demo-host-{id}"))
-        .spawn(move || DemoHost::new(id, events, wake).run(rx))
+        .spawn(move || {
+            let mut h = DemoHost::new(id, events, wake);
+            h.log_rate = logs_per_sec;
+            h.run(rx)
+        })
         .expect("spawn demo thread");
     HostHandle::new(id, CmdTx::Std(tx))
 }
@@ -502,6 +516,7 @@ struct DemoHost {
     units: Vec<String>,
     tiers: [Tier; 2],
     next_log: Instant,
+    log_rate: Option<f64>,
     bytes_window: (Instant, usize),
     overhead_bps: f64,
     last_tick: Instant,
@@ -554,6 +569,7 @@ impl DemoHost {
                 },
             ],
             next_log: now,
+            log_rate: None,
             bytes_window: (now, 0),
             overhead_bps: 0.0,
             last_tick: now,
@@ -616,7 +632,9 @@ impl DemoHost {
                 sudo: SudoMode::Root,
             }),
             EventKind::State(ConnState::Connected),
-            EventKind::ServiceMode { live_watching: true },
+            EventKind::ServiceMode {
+                live_watching: true,
+            },
             EventKind::LogSources(
                 LOG_SOURCES
                     .iter()
@@ -650,8 +668,11 @@ impl DemoHost {
             if now >= self.next_log {
                 let n = self.log_line();
                 self.send([EventKind::Logs(vec![n])]);
-                self.next_log =
-                    now + Duration::from_millis(400 + (self.server.rng.f() * 2200.0) as u64);
+                self.next_log = now
+                    + match self.log_rate {
+                        Some(r) => Duration::from_secs_f64(1.0 / r.max(0.1)),
+                        None => Duration::from_millis(400 + (self.server.rng.f() * 2200.0) as u64),
+                    };
             }
             if now.duration_since(self.bytes_window.0) >= Duration::from_secs(5) {
                 self.overhead_bps = self.bytes_window.1 as f64

@@ -69,10 +69,24 @@ pub struct HostConfig {
     pub services: Services,
     #[serde(default, rename = "logs", skip_serializing_if = "Vec::is_empty")]
     pub logs: Vec<LogSourceConfig>,
+    /// Lines of history each log channel starts with.
+    #[serde(default = "default_backlog")]
+    pub log_backlog: u32,
+    /// Log lines kept in memory for this host.
+    #[serde(default = "default_log_cap")]
+    pub log_cap: u32,
 }
 
 fn default_port() -> u16 {
     22
+}
+
+fn default_backlog() -> u32 {
+    200
+}
+
+fn default_log_cap() -> u32 {
+    10_000
 }
 
 impl HostConfig {
@@ -87,6 +101,8 @@ impl HostConfig {
             jump: String::new(),
             services: Services::default(),
             logs: vec![],
+            log_backlog: default_backlog(),
+            log_cap: default_log_cap(),
         }
     }
 

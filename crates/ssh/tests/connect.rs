@@ -535,3 +535,115 @@ fn probe_sudo_and_live_collector_over_ssh() {
             .any(|x| x.name == "redis-server.service" && x.active == "failed")
     );
 }
+
+#[test]
+fn logs_journal_and_files_over_ssh() {
+    use support::fakehost::{FakeHost, SUDO_PASSWORD};
+    use sw_core::config::LogSourceConfig;
+    use sw_core::logs::Level;
+    let Some(host) = FakeHost::new("logs") else {
+        eprintln!("SKIP: no bash found (set SW_TEST_BASH)");
+        return;
+    };
+    let srv = support::start_with_exec(support::ExecEnv {
+        bash: host.bash().into(),
+        env: host.env(),
+    });
+    let f = connect(srv.port, password(), TempDir::new("logs"));
+    // This user can't read the journal → the journal channel runs through sudo -S.
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::SudoPrompt { .. })
+    });
+    f.host.send(Command::SudoPassword(Some(SecretString::from(
+        SUDO_PASSWORD,
+    ))));
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Sudo(sw_ssh::api::SudoMode::Password))
+    });
+
+    let app_log = host.log_path("app.log");
+    let sources = vec![
+        LogSourceConfig {
+            id: "nginx".into(),
+            kind: "journal".into(),
+            target: "nginx.service".into(),
+            preset: None,
+            color: 0,
+        },
+        LogSourceConfig {
+            id: "app".into(),
+            kind: "file".into(),
+            target: app_log.clone(),
+            preset: None,
+            color: 1,
+        },
+    ];
+    f.host.send(Command::SetLogSources {
+        sources,
+        backlog: 200,
+    });
+    seen_or_wait(
+        &f,
+        |e| matches!(e, EventKind::LogSources(s) if s.len() == 2),
+    );
+
+    // Journal backlog: priority 3 → error, mapped to source 0.
+    seen_or_wait(
+        &f,
+        |e| matches!(e, EventKind::Logs(l) if l.iter().any(|x| x.source == 0 && x.level == Level::Error && x.msg == "upstream connect() failed")),
+    );
+    // File backlog through tail -F, mapped to source 1.
+    seen_or_wait(
+        &f,
+        |e| matches!(e, EventKind::Logs(l) if l.iter().any(|x| x.source == 1 && x.msg == "worker started")),
+    );
+    // A new line in the file arrives live, with the generic level detector.
+    host.append_log("app.log", "job FAILED: exit 1");
+    let ev = wait_for(
+        &f,
+        KeyDecision::Once,
+        |e| matches!(e, EventKind::Logs(l) if l.iter().any(|x| x.msg == "job FAILED: exit 1")),
+    );
+    let EventKind::Logs(l) = ev else {
+        unreachable!()
+    };
+    assert_eq!(
+        l.iter()
+            .find(|x| x.msg == "job FAILED: exit 1")
+            .unwrap()
+            .level,
+        Level::Error
+    );
+
+    // Discovery lists running units and files under the (fake) /var/log.
+    f.host.send(Command::DiscoverLogs);
+    let EventKind::LogCandidates(c) = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::LogCandidates(_))
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(
+        c.iter().filter(|x| x.kind == "journal").count(),
+        3,
+        "{c:#?}"
+    );
+    assert_eq!(
+        c.iter().filter(|x| x.kind != "journal").count(),
+        2,
+        "{c:#?}"
+    );
+    assert!(
+        c.iter()
+            .any(|x| x.kind == "journal" && x.target == "nginx.service"),
+        "{c:#?}"
+    );
+    assert!(
+        c.iter().any(|x| x.kind == "file" && x.target == app_log),
+        "{c:#?}"
+    );
+    assert!(
+        c.iter()
+            .any(|x| x.target.ends_with("nginx/error.log")
+                && x.preset == sw_core::logs::Preset::Nginx)
+    );
+}

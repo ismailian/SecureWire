@@ -102,9 +102,14 @@ fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(w::faint(
-                "No log sources yet — choosing and tailing logs arrives in M4.",
-            ));
+            ui.label(w::faint("No log sources yet ·"));
+            if ui
+                .link(RichText::new("choose log sources").size(11.0))
+                .clicked()
+            {
+                hu.filter.dirty = true;
+                hu.want_log_dialog = true;
+            }
         });
         return;
     }
@@ -133,12 +138,11 @@ fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
                         hu.filter.dirty = true;
                     }
                 }
-                let _ = w::icon_button(
-                    ui,
-                    ph::SLIDERS_HORIZONTAL,
-                    "Choose log sources… (M4)",
-                    false,
-                );
+                if w::icon_button(ui, ph::SLIDERS_HORIZONTAL, "Choose log sources…", false)
+                    .clicked()
+                {
+                    hu.want_log_dialog = true;
+                }
                 ui.add_space(4.0);
                 for lvl in Level::ALL {
                     let (fg, bg) = level_colors(lvl);

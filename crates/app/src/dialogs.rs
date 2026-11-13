@@ -32,7 +32,9 @@ fn modal<R>(
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -40.0))
-        .fixed_size(vec2(width, 0.0))
+        // Width fixed, height follows content (lists fill in after the first frame).
+        .min_width(width)
+        .max_width(width)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             body(ui)
@@ -680,8 +682,9 @@ impl ServicePicker {
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .auto_shrink([false, true])
-                    .show_rows(ui, 30.0, rows.len(), |ui, range| {
-                        for (name, active, desc) in &rows[range] {
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (name, active, desc) in &rows {
                             let on = self.selected.contains(name);
                             let (r, resp) = ui.allocate_exact_size(
                                 vec2(ui.available_width(), 28.0),
@@ -794,6 +797,271 @@ impl ServicePicker {
                                 units: self.selected.iter().cloned().collect(),
                                 mode: self.mode,
                                 poll_secs: self.poll.trim().parse().unwrap_or(30).clamp(5, 3600),
+                            };
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            },
+        );
+        if close {
+            self.open = false;
+        }
+        out
+    }
+}
+
+// ─────────────────────────────── Log sources ───────────────────────────────
+
+#[derive(Default)]
+pub struct LogSourcesDialog {
+    pub open: bool,
+    selected: Vec<sw_core::config::LogSourceConfig>,
+    custom: String,
+    custom_sudo: bool,
+    backlog: u32,
+    cap: u32,
+    error: Option<String>,
+}
+
+pub enum LogsOutcome {
+    None,
+    Apply {
+        sources: Vec<sw_core::config::LogSourceConfig>,
+        backlog: u32,
+        cap: u32,
+    },
+}
+
+impl LogSourcesDialog {
+    pub fn open_with(
+        &mut self,
+        current: &[sw_core::config::LogSourceConfig],
+        backlog: u32,
+        cap: u32,
+    ) {
+        *self = Self {
+            open: true,
+            selected: current.to_vec(),
+            backlog,
+            cap,
+            ..Default::default()
+        };
+    }
+
+    fn toggle(&mut self, kind: &str, target: &str, id: &str, preset: sw_core::logs::Preset) {
+        if let Some(i) = self.selected.iter().position(|s| s.target == target) {
+            self.selected.remove(i);
+        } else {
+            let color = (0..u8::MAX)
+                .find(|c| !self.selected.iter().any(|s| s.color == *c))
+                .unwrap_or(0);
+            self.selected.push(sw_core::config::LogSourceConfig {
+                id: id.to_owned(),
+                kind: kind.to_owned(),
+                target: target.to_owned(),
+                preset: (kind != "journal").then(|| preset.name().to_owned()),
+                color,
+            });
+        }
+    }
+
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        candidates: &[sw_core::logs::LogCandidate],
+        host: &str,
+    ) -> LogsOutcome {
+        if !self.open {
+            return LogsOutcome::None;
+        }
+        let mut out = LogsOutcome::None;
+        let mut close = false;
+        modal(
+            ctx,
+            "logsrc",
+            &format!("Log sources — {host}"),
+            ph::SCROLL,
+            620.0,
+            |ui| {
+                ui.label(w::faint(
+                "Discovered on the host: running services (journal) and log files under /var/log. \
+                 All selected sources stream over at most three channels of this connection.",
+            ));
+                // Candidates + selected sources the host didn't list.
+                let mut rows: Vec<(String, String, String, sw_core::logs::Preset)> = candidates
+                    .iter()
+                    .map(|c| (c.kind.clone(), c.target.clone(), c.id.clone(), c.preset))
+                    .collect();
+                for s in &self.selected {
+                    if !rows.iter().any(|r| r.1 == s.target) {
+                        let p = sw_core::logs::Preset::from_name(s.preset.as_deref().unwrap_or(""));
+                        rows.push((s.kind.clone(), s.target.clone(), s.id.clone(), p));
+                    }
+                }
+                rows.sort_by_key(|r| {
+                    (
+                        !self.selected.iter().any(|s| s.target == r.1),
+                        r.0 != "journal",
+                        r.1.clone(),
+                    )
+                });
+                if candidates.is_empty() {
+                    ui.label(w::faint("Discovering sources on the host…"));
+                } else {
+                    ui.label(w::faint(format!(
+                        "{} sources found on the host",
+                        candidates.len()
+                    )));
+                }
+                let mut toggled = None;
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (kind, target, id, preset) in &rows {
+                            let on = self.selected.iter().any(|s| &s.target == target);
+                            let (r, resp) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 28.0),
+                                egui::Sense::click(),
+                            );
+                            let p = ui.painter();
+                            if on {
+                                p.rect_filled(r, 3, ACC_DIM);
+                            } else if resp.hovered() {
+                                p.rect_filled(r, 3, BG2);
+                            }
+                            let cb = egui::Rect::from_center_size(
+                                egui::pos2(r.left() + 14.0, r.center().y),
+                                vec2(13.0, 13.0),
+                            );
+                            p.rect_stroke(
+                                cb,
+                                3,
+                                egui::Stroke::new(1.0, if on { ACC } else { LINE2 }),
+                                egui::StrokeKind::Inside,
+                            );
+                            if on {
+                                p.text(
+                                    cb.center(),
+                                    Align2::CENTER_CENTER,
+                                    ph::CHECK,
+                                    crate::theme::prop(11.0),
+                                    ACC,
+                                );
+                            }
+                            p.text(
+                                egui::pos2(r.left() + 30.0, r.center().y),
+                                Align2::LEFT_CENTER,
+                                id,
+                                crate::theme::mono(12.0),
+                                TX0,
+                            );
+                            let t: String = target
+                                .chars()
+                                .rev()
+                                .take(46)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect();
+                            p.text(
+                                egui::pos2(r.left() + 170.0, r.center().y),
+                                Align2::LEFT_CENTER,
+                                t,
+                                crate::theme::mono(11.0),
+                                TX3,
+                            );
+                            let (badge, fg) = match kind.as_str() {
+                                "journal" => ("JOURNAL", INFO),
+                                "sudo-file" => ("SUDO", WARN),
+                                _ => ("FILE", TX2),
+                            };
+                            p.text(
+                                egui::pos2(r.right() - 8.0, r.center().y),
+                                Align2::RIGHT_CENTER,
+                                badge,
+                                crate::theme::prop(10.0),
+                                fg,
+                            );
+                            if resp.clicked() {
+                                toggled = Some((kind.clone(), target.clone(), id.clone(), *preset));
+                            }
+                        }
+                    });
+                if let Some((k, t, i, p)) = toggled {
+                    self.toggle(&k, &t, &i, p);
+                }
+                ui.add_space(6.0);
+                field(ui, "Custom file", |ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.custom)
+                            .hint_text("/opt/app/logs/app.log")
+                            .desired_width(300.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    ui.checkbox(&mut self.custom_sudo, "needs sudo");
+                    if ui.button("Add").clicked() {
+                        let path = self.custom.trim().to_owned();
+                        if sw_core::shell::is_valid_path(&path)
+                            && !self.selected.iter().any(|s| s.target == path)
+                        {
+                            let id = path
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(&path)
+                                .trim_end_matches(".log")
+                                .to_owned();
+                            let kind = if self.custom_sudo {
+                                "sudo-file"
+                            } else {
+                                "file"
+                            };
+                            self.toggle(kind, &path, &id, sw_core::logs::Preset::Generic);
+                            self.custom.clear();
+                            self.error = None;
+                        } else {
+                            self.error = Some("Enter an absolute path (starting with /)".into());
+                        }
+                    }
+                });
+                if let Some(e) = &self.error {
+                    ui.label(RichText::new(e).color(WARN));
+                }
+                field(ui, "Initial backlog", |ui| {
+                    segmented(
+                        ui,
+                        &mut self.backlog,
+                        &[(50, "50"), (200, "200"), (1000, "1000 lines")],
+                    );
+                });
+                field(ui, "Keep in memory", |ui| {
+                    segmented(
+                        ui,
+                        &mut self.cap,
+                        &[(2_000, "2k"), (10_000, "10k"), (50_000, "50k lines")],
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(w::faint(format!(
+                        "{} selected · saved per host in hosts.toml",
+                        self.selected.len()
+                    )));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new("Apply").color(BG0)).fill(ACC))
+                            .clicked()
+                        {
+                            out = LogsOutcome::Apply {
+                                sources: self.selected.clone(),
+                                backlog: self.backlog,
+                                cap: self.cap,
                             };
                             close = true;
                         }

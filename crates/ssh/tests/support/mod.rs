@@ -87,6 +87,16 @@ pub struct TestServer {
     pub port: u16,
     pub observed: Arc<Mutex<Observed>>,
     pub host_key: PublicKey,
+    /// Every process started by exec requests, killed (with descendants) on drop.
+    all_pids: Arc<Mutex<Vec<u32>>>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        for pid in self.all_pids.lock().unwrap().drain(..) {
+            kill_tree(pid);
+        }
+    }
 }
 
 pub fn start() -> TestServer {
@@ -115,6 +125,8 @@ pub struct ExecEnv {
 
 pub fn start_on_with(port: u16, path: &Path, exec: Option<ExecEnv>) -> TestServer {
     let exec = exec.map(Arc::new);
+    let all_pids: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let all = all_pids.clone();
     let host = russh::keys::load_secret_key(path, None).expect("host key");
     let host_pub = host.public_key().clone();
     let client_keys: Vec<PublicKey> = ["test_client_ed25519.pub", "test_client_ed25519_enc.pub"]
@@ -145,17 +157,25 @@ pub fn start_on_with(port: u16, path: &Path, exec: Option<ExecEnv>) -> TestServe
                     break;
                 };
                 obs.lock().unwrap().sessions += 1;
+                let pids = Arc::new(Mutex::new(Vec::new()));
                 let h = Shell {
                     client_keys: client_keys.clone(),
                     obs: obs.clone(),
                     lines: HashMap::new(),
                     exec: exec.clone(),
                     stdins: HashMap::new(),
+                    pids: pids.clone(),
+                    all_pids: all.clone(),
                 };
                 let cfg = config.clone();
                 tokio::spawn(async move {
                     if let Ok(s) = server::run_stream(cfg, sock, h).await {
                         let _ = s.await;
+                    }
+                    // Connection gone: kill everything it started (tail -F, journalctl -f, …),
+                    // grandchildren included, so test processes never outlive the session.
+                    for pid in pids.lock().unwrap().drain(..) {
+                        kill_tree(pid);
                     }
                 });
             }
@@ -165,6 +185,7 @@ pub fn start_on_with(port: u16, path: &Path, exec: Option<ExecEnv>) -> TestServe
         port: rx.recv().unwrap(),
         observed,
         host_key: host_pub,
+        all_pids,
     }
 }
 
@@ -175,6 +196,9 @@ struct Shell {
     exec: Option<Arc<ExecEnv>>,
     /// Exec channels: client data goes to the local process.
     stdins: HashMap<ChannelId, tokio::process::ChildStdin>,
+    /// Processes started by exec requests on this connection.
+    pids: Arc<Mutex<Vec<u32>>>,
+    all_pids: Arc<Mutex<Vec<u32>>>,
 }
 
 const PROMPT: &[u8] = b"\x1b[32mtester@sw-test\x1b[0m:~$ ";
@@ -274,22 +298,28 @@ impl server::Handler for Shell {
             return Ok(());
         };
         let cmd = String::from_utf8_lossy(data).into_owned();
-        let mut child = match tokio::process::Command::new(&exec.bash)
+        let mut command = tokio::process::Command::new(&exec.bash);
+        command
             .arg("-c")
             .arg(&cmd)
             .envs(exec.env.iter().cloned())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0); // so kill_tree can take the whole group
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(_) => {
                 session.close(channel)?;
                 return Ok(());
             }
         };
+        if let Some(pid) = child.id() {
+            self.pids.lock().unwrap().push(pid);
+            self.all_pids.lock().unwrap().push(pid);
+        }
         if let Some(stdin) = child.stdin.take() {
             self.stdins.insert(channel, stdin);
         }
@@ -383,5 +413,22 @@ impl server::Handler for Shell {
             }
         }
         Ok(())
+    }
+}
+
+/// Kill a process and its descendants.
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    #[cfg(not(windows))]
+    {
+        // Children were started in their own process group (see exec_request).
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .status();
     }
 }

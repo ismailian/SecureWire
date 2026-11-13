@@ -434,3 +434,52 @@ fn every_overrides_a_section_interval() {
         });
     }
 }
+
+#[test]
+fn discovery_lists_units_and_files() {
+    use sw_ssh::collector::DISCOVER;
+    for (privilege, pw) in [("none", None), ("password", Some(fakehost::SUDO_PASSWORD))] {
+        let Some(host) = FakeHost::new(&format!("disc-{privilege}")) else {
+            return;
+        };
+        let mut child = Command::new(host.bash())
+            .args(["-s", "securewire-discover", privilege])
+            .envs(host.env())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(DISCOVER.as_bytes()).unwrap();
+        if let Some(pw) = pw {
+            writeln!(stdin, "{pw}").unwrap();
+        }
+        drop(stdin);
+        let out = child.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let c = sw_core::logs::parse_discovery(&text);
+        let units: Vec<_> = c
+            .iter()
+            .filter(|x| x.kind == "journal")
+            .map(|x| x.target.as_str())
+            .collect();
+        let files: Vec<_> = c
+            .iter()
+            .filter(|x| x.kind != "journal")
+            .map(|x| x.target.as_str())
+            .collect();
+        assert_eq!(
+            units.len(),
+            3,
+            "{privilege}: units {units:?}\nraw:\n{text}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            files.len(),
+            2,
+            "{privilege}: files {files:?}\nraw:\n{text}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

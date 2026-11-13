@@ -14,6 +14,14 @@ fn main() -> eframe::Result {
     // `--demo`: a fake host fed through the real parsers, no network (UI work, screenshots).
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo = args.iter().any(|a| a == "--demo");
+    // `--bench-ui[=report.txt]`: UI frame-time benchmark under a 50 lines/s log stream.
+    let bench = args.iter().find_map(|a| {
+        a.strip_prefix("--bench-ui").map(|rest| {
+            rest.strip_prefix('=')
+                .unwrap_or("securewire-bench.txt")
+                .into()
+        })
+    });
     let prefill = parse_connect_args(&args);
 
     let options = eframe::NativeOptions {
@@ -29,7 +37,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "SecureWire",
         options,
-        Box::new(|cc| Ok(Box::new(app::SecureWireApp::new(cc, demo, prefill)))),
+        Box::new(|cc| Ok(Box::new(app::SecureWireApp::new(cc, demo, prefill, bench)))),
     )
 }
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! A fake Linux host for running the real collector/probe scripts under a local
 //! bash: a fake `/proc` (via the scripts' `SW_PROC` hook) and stub commands
 //! (`df`, `who`, `ps`, `systemctl`, `id`, `sudo`, …) first on `PATH`.
@@ -28,6 +30,17 @@ fn slash(p: &Path) -> String {
     p.display().to_string().replace('\\', "/")
 }
 
+/// Absolute POSIX path as the remote shell sees it: `C:\x\y` → `/c/x/y` under Git Bash.
+pub fn posix(p: &Path) -> String {
+    let s = slash(p);
+    match s.as_bytes() {
+        [d, b':', b'/', ..] if cfg!(windows) => {
+            format!("/{}{}", (*d as char).to_ascii_lowercase(), &s[2..])
+        }
+        _ => s,
+    }
+}
+
 pub struct FakeHost {
     pub dir: PathBuf,
     bash: PathBuf,
@@ -43,7 +56,7 @@ impl FakeHost {
             .as_nanos();
         let dir =
             std::env::temp_dir().join(format!("sw-fakehost-{tag}-{}-{nanos}", std::process::id()));
-        for d in ["proc/net", "proc/sys/kernel", "bin"] {
+        for d in ["proc/net", "proc/sys/kernel", "bin", "log/nginx"] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
         }
         let h = Self {
@@ -77,6 +90,7 @@ impl FakeHost {
         vec![
             ("SW_PROC".into(), slash(&self.dir.join("proc"))),
             ("SW_OS_RELEASE".into(), slash(&self.dir.join("os-release"))),
+            ("SW_LOG_ROOT".into(), posix(&self.dir.join("log"))),
             ("PATH".into(), path),
         ]
     }
@@ -86,6 +100,17 @@ impl FakeHost {
     }
 
     fn write_static(&self) {
+        self.write(
+            "log/app.log",
+            "boot ok
+worker started
+",
+        );
+        self.write(
+            "log/nginx/error.log",
+            "2026/11/12 13:05:01 [error] 1123#1123: upstream timed out
+",
+        );
         self.write("proc/sys/kernel/hostname", "fake-vps\n");
         self.write("proc/sys/kernel/osrelease", "6.8.0-49-generic\n");
         self.write(
@@ -184,6 +209,16 @@ esac"#,
         stub(
             "journalctl",
             r#"case "$*" in
+  *"-o json"*)
+    # Log channel: two nginx entries (one error), or just the newest after a cursor.
+    case "$*" in
+      *--after-cursor*) ;;
+      *)
+        echo '{"__CURSOR":"c1","__REALTIME_TIMESTAMP":"1731416531000000","PRIORITY":"6","_SYSTEMD_UNIT":"nginx.service","MESSAGE":"nginx started"}'
+        echo '{"__CURSOR":"c2","__REALTIME_TIMESTAMP":"1731416532000000","PRIORITY":"3","_SYSTEMD_UNIT":"nginx.service","MESSAGE":"upstream connect() failed"}' ;;
+    esac
+    echo '{"__CURSOR":"c3","__REALTIME_TIMESTAMP":"1731416533000000","PRIORITY":"4","_SYSTEMD_UNIT":"nginx.service","MESSAGE":"after cursor"}'
+    sleep 300 ;;
   *_COMM=sshd*)
     now=$(date +%s)
     echo "$((now - 100)).000000 fake-vps sshd[1]: Failed password for root from 198.51.100.203 port 1 ssh2"
@@ -272,5 +307,22 @@ fi"#,
 impl Drop for FakeHost {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl FakeHost {
+    /// Append a line to a fake log file (as an application would).
+    pub fn append_log(&self, rel: &str, line: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(self.dir.join("log").join(rel))
+            .unwrap();
+        writeln!(f, "{line}").unwrap();
+    }
+
+    /// The path the remote shell uses for a fake log file.
+    pub fn log_path(&self, rel: &str) -> String {
+        posix(&self.dir.join("log").join(rel))
     }
 }

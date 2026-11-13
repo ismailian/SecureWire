@@ -269,3 +269,12 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 - **Unit watcher (Live mode):** its own channel running `journalctl -f -n 0 -q -o cat _PID=1 'UNIT=a' 'UNIT=b' …` (units validated + quoted), via `sudo -n`/`sudo -S` when the journal needs privilege. Any output → `NOW svc` (≤ 1/s). If it can't run, the actor falls back to `EVERY svc 5` and the UI says "polling".
 - **Unit picker list:** one-shot `systemctl list-units --type=service,timer --all --no-legend --plain --no-pager`.
 - **Alert:** a listener on a public address whose port no ALLOW rule mentions, when the firewall is active and denies incoming by default.
+
+## 12. Implementation notes (M4 — logs)
+
+- **Discovery:** `collector/discover.sh` on stdin of `exec bash -s securewire-discover <priv>` (password = first line after the script). Lists running services (`unit <name> <desc>`) and files under `/var/log` (depth 3, `*.log`, syslog, messages, secure, kern.log; `find` runs via sudo when available so 0750 directories are visible), each marked `r` (readable) or `sudo`. Test hook `SW_LOG_ROOT`.
+- **Channels** (at most three per host): `journalctl -f -n <backlog> -q -o json --output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,__REALTIME_TIMESTAMP -u <unit>…` (via sudo when the journal isn't readable); `tail -n <backlog> -F -- <files>`; `sudo tail …` for root-only files. Units and paths are validated and single-quoted.
+- **Parsing** happens on the net thread: journal JSON → level from PRIORITY, source by `_SYSTEMD_UNIT` (or `UNIT` for PID 1's messages about the unit); `tail` headers (`==> path <==`) switch files only on exact configured paths; file levels come from the source's preset. Packets within 30 ms become one UI batch.
+- **Reconnect:** the journal resumes with `--after-cursor=<last cursor>`; files restart with `-n 0` (lines written while disconnected are not replayed).
+- **Settings per host** (`hosts.toml`): `[[host.logs]]` sources, `log_backlog` (50/200/1000), `log_cap` (2k/10k/50k lines kept in memory).
+- **Measured:** `securewire --bench-ui` (demo host, 50 lines/s, 20 s, release build on Windows): p50 1.00 ms, p95 1.48 ms, p99 1.82 ms, max 3.92 ms per frame — budget < 4 ms.

@@ -93,6 +93,13 @@ pub(crate) enum CollectorMsg {
     Rtt(u32),
     /// A watched unit changed state (Live service mode).
     UnitEvent,
+    /// Last journal position seen (for resuming after a reconnect).
+    JournalCursor(String),
+    /// A log channel ended; `reason` = its stderr when it produced nothing.
+    LogEnded {
+        generation: u64,
+        reason: Option<String>,
+    },
     WatcherEnded {
         generation: u64,
     },
@@ -229,6 +236,7 @@ where
 pub(crate) async fn run_exec<H: client::Handler>(
     h: &Handle<H>,
     command: &str,
+    script: Option<&str>,
     secret: Option<&SecretString>,
     timeout: Duration,
     max_bytes: usize,
@@ -236,6 +244,9 @@ pub(crate) async fn run_exec<H: client::Handler>(
     let fut = async {
         let mut ch = h.channel_open_session().await.map_err(|e| e.to_string())?;
         ch.exec(false, command).await.map_err(|e| e.to_string())?;
+        if let Some(sc) = script {
+            ch.data(sc.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
         if let Some(s) = secret {
             send_secret_line(&ch, s).await?;
         }
@@ -283,6 +294,126 @@ pub(crate) async fn start_unit_watcher<H: client::Handler>(
             }
         }
         let _ = msgs.send(CollectorMsg::WatcherEnded { generation });
+    });
+    Ok(write)
+}
+
+/// What a log channel carries and how its lines map to the host's source list.
+pub(crate) enum LogBackend {
+    /// unit name → source index
+    Journal(std::collections::HashMap<String, u16>),
+    /// (path, source index, preset) per tailed file
+    Files(Vec<(String, u16, sw_core::logs::Preset)>),
+}
+
+/// Start one log channel (journal, files, or sudo files). Lines are parsed on
+/// this thread and reach the UI in coalesced batches.
+pub(crate) async fn start_log_channel<H: client::Handler>(
+    h: &Handle<H>,
+    command: String,
+    secret: Option<SecretString>,
+    backend: LogBackend,
+    generation: u64,
+    emit: impl Fn(Vec<EventKind>) + Send + 'static,
+    msgs: UnboundedSender<CollectorMsg>,
+) -> Result<Writer, String> {
+    use sw_core::logs::{Level, LogLine, TailParser, detect_level, parse_journal_line};
+    let ch = h.channel_open_session().await.map_err(|e| e.to_string())?;
+    ch.exec(false, command).await.map_err(|e| e.to_string())?;
+    if let Some(s) = &secret {
+        send_secret_line(&ch, s).await?;
+    }
+    let (mut read, write) = ch.split();
+    tokio::spawn(async move {
+        let mut tail = match &backend {
+            LogBackend::Files(f) => Some(TailParser::new(f.iter().map(|x| x.0.clone()).collect())),
+            LogBackend::Journal(_) => None,
+        };
+        let mut partial = Vec::new();
+        let mut stderr = String::new();
+        let mut any = false;
+        let mut open = true;
+        while open {
+            let mut msg = read.wait().await;
+            let mut lines: Vec<LogLine> = Vec::new();
+            let mut cursor = None;
+            loop {
+                match msg {
+                    None | Some(ChannelMsg::Close) => {
+                        open = false;
+                        break;
+                    }
+                    Some(ChannelMsg::Data { data }) => {
+                        partial.extend_from_slice(&data);
+                        // Only complete lines; a partial one waits for the next packet.
+                        let upto = partial
+                            .iter()
+                            .rposition(|&b| b == b'\n')
+                            .map_or(0, |i| i + 1);
+                        let complete: Vec<u8> = partial.drain(..upto).collect();
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_millis() as i64);
+                        for raw in String::from_utf8_lossy(&complete).lines() {
+                            match &backend {
+                                LogBackend::Journal(units) => {
+                                    let Some(e) = parse_journal_line(raw) else {
+                                        continue;
+                                    };
+                                    let src =
+                                        units.get(&e.unit).or_else(|| units.get(&e.about_unit));
+                                    let Some(&source) = src else { continue };
+                                    if !e.cursor.is_empty() {
+                                        cursor = Some(e.cursor.clone());
+                                    }
+                                    lines.push(LogLine {
+                                        ts_ms: if e.ts_us > 0 {
+                                            (e.ts_us / 1000) as i64
+                                        } else {
+                                            now_ms
+                                        },
+                                        source,
+                                        level: Level::from_priority(e.priority),
+                                        msg: e.message,
+                                    });
+                                }
+                                LogBackend::Files(files) => {
+                                    let Some((i, text)) = tail.as_mut().and_then(|t| t.line(raw))
+                                    else {
+                                        continue;
+                                    };
+                                    let (_, source, preset) = &files[i];
+                                    lines.push(LogLine {
+                                        ts_ms: now_ms,
+                                        source: *source,
+                                        level: detect_level(*preset, text),
+                                        msg: text.to_owned(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Some(ChannelMsg::ExtendedData { data, .. }) if stderr.len() < 2048 => {
+                        stderr.push_str(&String::from_utf8_lossy(&data));
+                    }
+                    Some(_) => {}
+                }
+                match tokio::time::timeout(COALESCE, read.wait()).await {
+                    Ok(next) => msg = next,
+                    Err(_) => break,
+                }
+            }
+            if let Some(c) = cursor {
+                let _ = msgs.send(CollectorMsg::JournalCursor(c));
+            }
+            if !lines.is_empty() {
+                any = true;
+                emit(vec![EventKind::Logs(lines)]);
+            }
+        }
+        let reason = (!any && !stderr.trim().is_empty())
+            .then(|| stderr.trim().lines().next().unwrap_or("").to_owned());
+        let _ = msgs.send(CollectorMsg::LogEnded { generation, reason });
     });
     Ok(write)
 }

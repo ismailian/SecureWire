@@ -115,3 +115,11 @@ Format: **context → decision → consequences**.
 
 ### D-026 · Live service status = journal match on PID 1's messages about the units
 - **Decision:** `journalctl -f -n 0 _PID=1 UNIT=…` on its own channel; output only triggers `NOW svc`, it isn't parsed. Without journal access and without sudo it degrades to a 5 s poll, shown in the UI.
+
+### D-027 · Dialog windows: fixed width, height follows content
+- **Context:** `Window::fixed_size` locked the height at the first frame, when lists were still loading; the list then showed two rows. Found during the M4 GUI check.
+- **Decision:** dialogs use `min_width = max_width = width` and auto height.
+
+### D-028 · Test SSH server owns its processes
+- **Context:** `tail -F` / `journalctl -f` stubs outlived the tests and kept cargo's output pipe open, hanging `cargo test`.
+- **Decision:** the in-process server records every process it starts and kills each tree when the connection ends and when the server is dropped (end of each test).

@@ -21,11 +21,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::Waker;
 use crate::api::{
     AuthSpec, Command, ConnInfo, ConnState, ConnectSpec, Event, EventKind, HostId, HostKeyStatus,
-    KeyDecision, PtyId, SudoMode, Throttle,
+    KeyDecision, LogKind, LogSourceInfo, PtyId, SudoMode, Throttle,
 };
 use crate::collector::{self, Priv};
 use crate::remote::{self, CollectorMsg};
 use sw_core::config::ServiceMode;
+use sw_core::logs::Preset;
 
 const BACKOFF: [u32; 6] = [1, 2, 4, 8, 16, 30];
 const TERM_NAME: &str = "xterm-256color";
@@ -342,6 +343,11 @@ enum Internal {
         result: Result<remote::Writer, String>,
     },
     Units(Result<Vec<sw_core::model::UnitInfo>, String>),
+    LogStarted {
+        generation: u64,
+        result: Result<remote::Writer, String>,
+    },
+    Discovered(Result<Vec<sw_core::logs::LogCandidate>, String>),
 }
 
 struct Pty {
@@ -396,6 +402,14 @@ pub(crate) struct Actor {
     watcher: Option<remote::Writer>,
     watcher_gen: u64,
     last_unit_now: Option<Instant>,
+    // ---- M4: log channels (protocol §6) ----
+    log_sources: Vec<sw_core::config::LogSourceConfig>,
+    log_backlog: u32,
+    log_writers: Vec<remote::Writer>,
+    log_gen: u64,
+    journal_cursor: Option<String>,
+    /// Logs ran in an earlier session → resume (cursor, no file backlog) after reconnect.
+    logs_ran: bool,
 }
 
 impl Actor {
@@ -442,6 +456,12 @@ impl Actor {
             watcher: None,
             watcher_gen: 0,
             last_unit_now: None,
+            log_sources: Vec::new(),
+            log_backlog: 200,
+            log_writers: Vec::new(),
+            log_gen: 0,
+            journal_cursor: None,
+            logs_ran: false,
         }
     }
 
@@ -491,6 +511,13 @@ impl Actor {
             }
             // Meaningless without a connection.
             Command::ListUnits => None,
+            Command::SetLogSources { sources, backlog } => {
+                self.log_sources = sources;
+                self.log_backlog = backlog;
+                self.emit_log_sources();
+                None
+            }
+            Command::DiscoverLogs => None,
             Command::Now(_)
             | Command::PtyInput { .. }
             | Command::PtyResize { .. }
@@ -836,6 +863,13 @@ impl Actor {
                             self.apply_service_mode().await;
                         }
                         Command::ListUnits => self.list_units(),
+                        Command::SetLogSources { sources, backlog } => {
+                            self.log_sources = sources;
+                            self.log_backlog = backlog;
+                            self.emit_log_sources();
+                            self.start_logs(false).await;
+                        }
+                        Command::DiscoverLogs => self.discover_logs(),
                         Command::SudoPassword(Some(pw)) => self.check_sudo(&handle, pw),
                         Command::SudoPassword(None) => {
                             self.sudo_skipped = true;
@@ -893,6 +927,19 @@ impl Actor {
                         }
                     }
                     Some(Internal::Units(Ok(u))) => self.emit(EventKind::Units(u)),
+                    Some(Internal::LogStarted { generation, result }) => {
+                        if generation == self.log_gen {
+                            match result {
+                                Ok(w) => {
+                                    self.log_writers.push(w);
+                                    self.emit_link();
+                                }
+                                Err(e) => self.emit(EventKind::Error(format!("Could not start a log channel: {e}"))),
+                            }
+                        }
+                    }
+                    Some(Internal::Discovered(Ok(c))) => self.emit(EventKind::LogCandidates(c)),
+                    Some(Internal::Discovered(Err(e))) => self.emit(EventKind::Error(format!("Log discovery failed: {e}"))),
                     Some(Internal::Units(Err(e))) => self.emit(EventKind::Error(format!("Could not list units: {e}"))),
                     Some(Internal::CollectorStarted { generation, result }) => {
                         if generation == self.collector_gen {
@@ -940,6 +987,13 @@ impl Actor {
                         if !handle.is_closed() {
                             self.emit(EventKind::Error("Live metrics stopped: the collector exited".into()));
                         }
+                    }
+                    Some(CollectorMsg::JournalCursor(c)) => self.journal_cursor = Some(c),
+                    Some(CollectorMsg::LogEnded { generation, reason }) => {
+                        if generation == self.log_gen && !handle.is_closed()
+                            && let Some(r) = reason {
+                                self.emit(EventKind::Error(format!("A log source stopped: {r}")));
+                            }
                     }
                     Some(CollectorMsg::UnitEvent) => {
                         // A watched unit changed: refresh now, at most once a second.
@@ -1102,12 +1156,166 @@ impl Actor {
                 &h,
                 collector::LIST_UNITS_COMMAND,
                 None,
+                None,
                 Duration::from_secs(20),
                 1 << 20,
             )
             .await
             .map(|(out, _)| sw_core::parse::parse_units(&out));
             let _ = tx.send(Internal::Units(r));
+        });
+    }
+
+    /// (Re)start the log channels (protocol §6): one for journal units, one for
+    /// readable files, one for root-only files. `resume`: after a reconnect, the
+    /// journal continues from its cursor and files start with no backlog.
+    async fn start_logs(&mut self, resume: bool) {
+        for w in self.log_writers.drain(..) {
+            let _ = w.close().await;
+        }
+        self.log_gen += 1;
+        self.emit_link();
+        let (Some(h), Some(probe)) = (self.handle.clone(), self.probe.clone()) else {
+            return;
+        };
+        if self.log_sources.is_empty() {
+            return;
+        }
+        self.logs_ran = true;
+        let generation = self.log_gen;
+        let privilege = Priv::from_sudo(self.sudo_mode);
+        let secret = |p: Priv| {
+            if p == Priv::Password {
+                self.sudo_password.clone()
+            } else {
+                None
+            }
+        };
+        let mut channels: Vec<(String, Option<SecretString>, remote::LogBackend)> = Vec::new();
+
+        let journal: Vec<(String, u16)> = self
+            .log_sources
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind == "journal")
+            .map(|(i, s)| (s.target.clone(), i as u16))
+            .collect();
+        if !journal.is_empty() {
+            let jp = if probe.journal_read {
+                Priv::None
+            } else {
+                privilege
+            };
+            if !probe.journal_read && jp == Priv::None {
+                self.emit(EventKind::Error(
+                    "Journal log sources need sudo on this host (click \"no sudo\" in the status bar)".into(),
+                ));
+            } else {
+                let units: Vec<String> = journal.iter().map(|j| j.0.clone()).collect();
+                let cursor = if resume {
+                    self.journal_cursor.as_deref()
+                } else {
+                    None
+                };
+                if let Some(cmd) = collector::journal_command(
+                    &units,
+                    self.log_backlog,
+                    cursor,
+                    collector::sudo_prefix(jp),
+                ) {
+                    channels.push((
+                        cmd,
+                        secret(jp),
+                        remote::LogBackend::Journal(journal.into_iter().collect()),
+                    ));
+                }
+            }
+        }
+        for (kind, p) in [("file", Priv::None), ("sudo-file", privilege)] {
+            let files: Vec<(String, u16, Preset)> = self
+                .log_sources
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.kind == kind)
+                .map(|(i, s)| {
+                    (
+                        s.target.clone(),
+                        i as u16,
+                        Preset::from_name(s.preset.as_deref().unwrap_or("")),
+                    )
+                })
+                .collect();
+            if files.is_empty() {
+                continue;
+            }
+            if kind == "sudo-file" && p == Priv::None {
+                self.emit(EventKind::Error(format!(
+                    "{} log file(s) need sudo (click \"no sudo\" in the status bar)",
+                    files.len()
+                )));
+                continue;
+            }
+            let paths: Vec<String> = files.iter().map(|f| f.0.clone()).collect();
+            let backlog = if resume { 0 } else { self.log_backlog };
+            if let Some(cmd) = collector::tail_command(&paths, backlog, collector::sudo_prefix(p)) {
+                channels.push((cmd, secret(p), remote::LogBackend::Files(files)));
+            }
+        }
+        for (cmd, secret, backend) in channels {
+            let (h, tx, msgs, shared) = (
+                h.clone(),
+                self.internal_tx.clone(),
+                self.coll_tx.clone(),
+                self.shared.clone(),
+            );
+            tokio::spawn(async move {
+                let emit = move |evs: Vec<EventKind>| shared.emit_batch(evs);
+                let result =
+                    remote::start_log_channel(&h, cmd, secret, backend, generation, emit, msgs)
+                        .await;
+                let _ = tx.send(Internal::LogStarted { generation, result });
+            });
+        }
+    }
+
+    fn emit_log_sources(&self) {
+        let infos = self
+            .log_sources
+            .iter()
+            .map(|s| LogSourceInfo {
+                name: s.id.clone(),
+                kind: match s.kind.as_str() {
+                    "journal" => LogKind::Journal,
+                    "sudo-file" => LogKind::SudoFile,
+                    _ => LogKind::File,
+                },
+                target: s.target.clone(),
+            })
+            .collect();
+        self.emit(EventKind::LogSources(infos));
+    }
+
+    fn discover_logs(&self) {
+        let Some(h) = self.handle.clone() else { return };
+        let p = Priv::from_sudo(self.sudo_mode);
+        let secret = if p == Priv::Password {
+            self.sudo_password.clone()
+        } else {
+            None
+        };
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let r = remote::run_exec(
+                &h,
+                &collector::discover_command(p),
+                Some(collector::DISCOVER),
+                secret.as_ref(),
+                Duration::from_secs(30),
+                1 << 20,
+            )
+            .await
+            .map(|(out, _)| sw_core::logs::parse_discovery(&out));
+            let _ = tx.send(Internal::Discovered(r));
         });
     }
 
@@ -1179,10 +1387,15 @@ impl Actor {
 
     /// New privilege → relaunch the collector (root-only sections) and the unit watcher.
     async fn set_sudo(&mut self, mode: SudoMode) {
+        let before = Priv::from_sudo(self.sudo_mode);
         self.sudo_mode = mode;
         self.emit(EventKind::Sudo(mode));
         if self.collector.is_some() && Priv::from_sudo(mode) != self.collector_priv {
             self.spawn_collector().await;
+        }
+        // sudo-only log sources (and a privileged journal) can start now.
+        if before != Priv::from_sudo(mode) && !self.log_sources.is_empty() && self.probe.is_some() {
+            self.start_logs(self.logs_ran).await;
         }
     }
 
@@ -1195,6 +1408,8 @@ impl Actor {
         self.collector_gen += 1;
         self.watcher = None;
         self.watcher_gen += 1;
+        self.log_writers.clear();
+        self.log_gen += 1;
         self.handle = None;
         self.link.rtt_ms = None;
         self.link.overhead_bps = 0.0;

@@ -172,3 +172,83 @@ mod m3_tests {
         assert_eq!(every(Section::Svc, 30), "EVERY svc 30");
     }
 }
+
+// ───────────────────────── M4: logs (protocol §6) ─────────────────────────
+
+/// Log discovery, streamed on stdin of [`discover_command`].
+pub const DISCOVER: &str = include_str!("../../../collector/discover.sh");
+
+pub fn discover_command(p: Priv) -> String {
+    format!("exec bash -s securewire-discover {}", p.arg())
+}
+
+/// Prefix + optional stdin secret for running a log reader with privilege.
+pub fn sudo_prefix(p: Priv) -> &'static str {
+    match p {
+        Priv::None | Priv::Root => "",
+        Priv::NoPasswd => "sudo -n -- ",
+        Priv::Password => "sudo -S -p \"\" -- ",
+    }
+}
+
+/// `journalctl -f -o json` for the given units. `resume_cursor` replaces the
+/// backlog after a reconnect so nothing is lost or duplicated.
+pub fn journal_command(
+    units: &[String],
+    backlog: u32,
+    resume_cursor: Option<&str>,
+    prefix: &str,
+) -> Option<String> {
+    let units: Vec<String> = units
+        .iter()
+        .filter(|u| is_valid_unit(u))
+        .map(|u| format!("-u {}", sw_core::shell::shell_quote(u)))
+        .collect();
+    if units.is_empty() {
+        return None;
+    }
+    let start = match resume_cursor {
+        Some(c) => format!("--after-cursor={}", sw_core::shell::shell_quote(c)),
+        None => format!("-n {backlog}"),
+    };
+    Some(format!(
+        "exec {prefix}journalctl -f {start} -q -o json \
+         --output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,__REALTIME_TIMESTAMP {}",
+        units.join(" ")
+    ))
+}
+
+/// `tail -F` for files (absolute paths only, each quoted).
+pub fn tail_command(paths: &[String], backlog: u32, prefix: &str) -> Option<String> {
+    let files: Vec<String> = paths
+        .iter()
+        .filter(|p| sw_core::shell::is_valid_path(p))
+        .map(|p| sw_core::shell::shell_quote(p))
+        .collect();
+    (!files.is_empty()).then(|| format!("exec {prefix}tail -n {backlog} -F -- {}", files.join(" ")))
+}
+
+#[cfg(test)]
+mod m4_tests {
+    use super::*;
+
+    #[test]
+    fn log_commands() {
+        let j = journal_command(&["nginx.service".into(), "x;y".into()], 200, None, "").unwrap();
+        assert!(j.starts_with("exec journalctl -f -n 200 -q -o json"));
+        assert!(j.ends_with("-u 'nginx.service'"));
+        let r = journal_command(
+            &["nginx.service".into()],
+            200,
+            Some("s=1;i=2"),
+            "sudo -n -- ",
+        )
+        .unwrap();
+        assert!(r.contains("exec sudo -n -- journalctl -f --after-cursor='s=1;i=2'"));
+        let t = tail_command(&["/var/log/a b.log".into(), "rel.log".into()], 50, "").unwrap();
+        assert_eq!(t, "exec tail -n 50 -F -- '/var/log/a b.log'");
+        assert!(tail_command(&["$(x)".into()], 1, "").is_none());
+        assert!(DISCOVER.trim_end().ends_with("discover \"$@\""));
+        assert!(!DISCOVER.contains('\r'));
+    }
+}
