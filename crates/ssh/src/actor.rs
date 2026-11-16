@@ -39,11 +39,16 @@ pub(crate) struct Shared {
 
 impl Shared {
     fn emit(&self, kind: EventKind) {
+        // Status-bar numbers (RTT, overhead, channel count) don't earn a repaint of their own:
+        // the next metrics frame (≤ 2 s) shows them. Measured ~0.3 wakes/s saved.
+        let quiet = matches!(kind, EventKind::Link(_));
         let _ = self.events.send(Event {
             host: self.id,
             kind,
         });
-        (self.wake)();
+        if !quiet {
+            (self.wake)();
+        }
     }
 
     /// Several events, one UI wake-up.

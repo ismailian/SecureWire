@@ -26,6 +26,7 @@ for t in ufw nft iptables fail2ban-client ss docker; do
     echo "$t=$(has "$t")"
 done
 if [ -r /etc/os-release ]; then
+    # shellcheck source=/dev/null # the server's own file
     . /etc/os-release
     echo "os=${ID:-unknown}:${VERSION_ID:-}"
 fi
