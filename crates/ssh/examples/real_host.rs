@@ -567,10 +567,12 @@ fn steady(run: &mut Run) {
             .map(String::from)
             .to_vec(),
     ));
-    run.host.send(Command::SetServiceMode {
-        mode: sw_core::config::ServiceMode::Poll,
-        poll_secs: 10,
-    });
+    let mode = if std::env::var_os("SW_REAL_STEADY_LIVE").is_some() {
+        sw_core::config::ServiceMode::Live
+    } else {
+        sw_core::config::ServiceMode::Poll
+    };
+    run.host.send(Command::SetServiceMode { mode, poll_secs: 10 });
     let term = Terminal::new(
         Size {
             cols: 160,
@@ -604,7 +606,11 @@ fn steady(run: &mut Run) {
         }
         None
     };
-    let groups: [(&str, &[Section]); 6] = [
+    let groups: [(&str, &[Section]); 7] = [
+        (
+            "all default-visible",
+            &[Section::Cpu, Section::Mem, Section::Net, Section::Dio, Section::Df, Section::Who, Section::Svc, Section::Ports, Section::Fw, Section::F2b, Section::Auth],
+        ),
         ("none", &[]),
         (
             "fast cpu+mem+net+dio",
@@ -615,7 +621,13 @@ fn steady(run: &mut Run) {
         ("df+ports+fw", &[Section::Df, Section::Ports, Section::Fw]),
         ("f2b", &[Section::F2b]),
     ];
+    // SW_REAL_STEADY_ONLY=f2b  SW_REAL_STEADY_SECS=130: one group, a longer window.
+    let only = std::env::var("SW_REAL_STEADY_ONLY").ok();
+    let secs: u64 = std::env::var("SW_REAL_STEADY_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
     for (name, on) in groups {
+        if only.as_deref().is_some_and(|o| !name.contains(o)) {
+            continue;
+        }
         for s in all {
             run.host.send(Command::SetSection {
                 section: s,
@@ -624,9 +636,9 @@ fn steady(run: &mut Run) {
         }
         run.pump(Duration::from_secs(3), |_| false);
         let a = read(run, &format!("{}a", name.len()));
-        run.pump(Duration::from_secs(40), |_| false);
+        run.pump(Duration::from_secs(secs), |_| false);
         let b = read(run, &format!("{}b", name.len()));
-        let ms_per_s = b.zip(a).map(|(b, a)| (b - a) as f64 * 10.0 / 40.0);
+        let ms_per_s = b.zip(a).map(|(b, a)| (b - a) as f64 * 10.0 / secs as f64);
         println!(
             "STEADY {name}: {} ms CPU per second ({}% of a core)",
             ms_per_s.map_or("?".into(), |v| format!("{v:.2}")),

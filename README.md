@@ -26,7 +26,7 @@ Rust · egui · russh · alacritty_terminal. Windows, Linux and macOS clients; L
 
 **Nothing is installed or written there.** On connect, a short probe and a small bash script are streamed over SSH and run from memory (`bash -s`). The script sends back plain text that the app parses. Everything runs over **one SSH connection per host**: terminal tabs, metrics, log tails, actions and tunnels are channels on it.
 
-Collection follows what you can see. Closed sections stop collecting, and an unfocused or minimized window slows collection down. On a small 2-vCPU VM the script costs about 0.4 % of one core with the default panels open, and monitoring traffic is under 1 KB/s.
+Collection follows what you can see. Closed sections stop collecting, and an unfocused or minimized window slows collection down. On a small 2-vCPU VM the script costs about 0.3 % of one core with the default panels open, and monitoring traffic is under 1 KB/s.
 
 ## Security model
 

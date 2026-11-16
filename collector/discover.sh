@@ -5,7 +5,7 @@
 # Test hook: SW_LOG_ROOT (default /var/log).
 
 discover() {
-    local priv=${2:-none} root=${SW_LOG_ROOT:-/var/log} pw= f
+    local priv=${2:-none} root=${SW_LOG_ROOT:-/var/log} pw='' f
     PATH=$PATH:/usr/sbin:/sbin
     if [[ $priv == password ]]; then
         IFS= read -r pw || exit 0

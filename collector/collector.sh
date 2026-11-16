@@ -194,6 +194,7 @@ s_f2b() {
     F2B_AT=$now
     # A refused command is an error, not "no jails".
     local out
+    # shellcheck disable=SC2016 # $j is expanded by the inner sh, on purpose
     out=$(sudo_run sh -c 'fail2ban-client status; for j in $(fail2ban-client status | sed -n "s/.*Jail list:[[:space:]]*//p" | tr "," " "); do echo "@@jail $j"; fail2ban-client status "$j"; done' 2>/dev/null) || { missing f2b unavailable; return; }
     frame f2b "$out" 1
 }
@@ -229,7 +230,7 @@ s_timers() {
 # ---------- once ----------
 
 s_static() {
-    local l o host=unknown kernel= pretty= cpus=0 memk=0 arch virt=none
+    local l o host=unknown kernel='' pretty='' cpus=0 memk=0 arch virt=none
     [[ -r $P/sys/kernel/hostname ]] && read -r host < "$P/sys/kernel/hostname"
     [[ -r $P/sys/kernel/osrelease ]] && read -r kernel < "$P/sys/kernel/osrelease"
     if [[ -r $OSREL ]]; then
@@ -277,6 +278,9 @@ handle() {
         SVC)
             local u ok=() words
             set -f # no glob expansion of unit names
+            # Split on whitespace on purpose; globbing is off. (A here-string with read -a would
+            # need a temp file on older bash: nothing may be written on the server.)
+            # shellcheck disable=SC2206
             words=($rest)
             set +f
             for u in "${words[@]}"; do [[ $u =~ ^[A-Za-z0-9@._:-]+$ && $u != -* ]] && ok+=("$u"); done
