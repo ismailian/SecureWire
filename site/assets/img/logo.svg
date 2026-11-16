@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- SecureWire logo: a shield on a wire, with a shell prompt. Colors from design/design-tokens.md. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c232c"/>
+      <stop offset="1" stop-color="#0c0f13"/>
+    </linearGradient>
+    <linearGradient id="sh" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6fd8ca"/>
+      <stop offset="1" stop-color="#38a596"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="976" height="976" rx="216" fill="url(#bg)" stroke="#313a46" stroke-width="8"/>
+  <!-- the wire -->
+  <path d="M150 520 H874" stroke="#4fc3b4" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="150" cy="520" r="44" fill="#0c0f13" stroke="#4fc3b4" stroke-width="30"/>
+  <circle cx="874" cy="520" r="44" fill="#0c0f13" stroke="#4fc3b4" stroke-width="30"/>
+  <!-- the shield -->
+  <path d="M512 176 C598 232 684 252 768 256 V512 C768 676 660 790 512 852 C364 790 256 676 256 512 V256 C340 252 426 232 512 176 Z"
+        fill="url(#sh)" stroke="#0c0f13" stroke-width="28" stroke-linejoin="round"/>
+  <!-- the prompt: >_ -->
+  <path d="M388 426 L480 506 L388 586" fill="none" stroke="#0c0f13" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M532 596 H640" stroke="#0c0f13" stroke-width="58" stroke-linecap="round"/>
+</svg>

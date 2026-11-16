@@ -233,15 +233,69 @@ pub fn demo_screen(ui: &mut Ui, host: &str, user: &str) {
         TX0,
     );
 
+    // A recorded session (it matches the demo data: redis-server has failed), so the demo looks
+    // like real use. Nothing here runs anything.
+    let host = host.trim_end_matches(" (demo)");
+    let prompt = format!("{user}@{host}");
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let font = theme::mono(13.0);
         let mut job = LayoutJob::default();
-        let mut put = |t: &str, c: Color32| job.append(t, 0.0, TextFormat { font_id: font.clone(), color: c, line_height: Some(19.5), ..Default::default() });
-        put(&format!("{user}@{host}"), OK);
+        let mut put = |t: &str, c: Color32| {
+            job.append(
+                t,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: c,
+                    line_height: Some(19.5),
+                    ..Default::default()
+                },
+            )
+        };
+        let cmd = |put: &mut dyn FnMut(&str, Color32), c: &str| {
+            put(&prompt, OK);
+            put(":~# ", TERM_FG);
+            put(c, TX0);
+            put("
+", TERM_FG);
+        };
+        cmd(&mut put, "systemctl status redis-server --no-pager -n 3");
+        put("× ", ERR);
+        put("redis-server.service - Advanced key-value store
+", TX0);
+        put("     Loaded: loaded (/usr/lib/systemd/system/redis-server.service; enabled; preset: enabled)
+", TERM_FG);
+        put("     Active: ", TERM_FG);
+        put("failed", ERR);
+        put(" (Result: exit-code) since Mon 2026-11-16 18:44:09 UTC; 3min ago
+", TERM_FG);
+        put("    Process: 1874 ExecStart=/usr/bin/redis-server /etc/redis/redis.conf (code=exited, status=1/FAILURE)
+", TERM_FG);
+        put("   Main PID: 1874 (code=exited, status=1/FAILURE)
+
+", TERM_FG);
+        put("Nov 16 18:44:09 prod-web-01 redis-server[1874]: # Can't open the log file: Permission denied
+", TERM_FG);
+        put("Nov 16 18:44:09 prod-web-01 systemd[1]: redis-server.service: Main process exited, code=exited, status=1/FAILURE
+", TERM_FG);
+        put("Nov 16 18:44:09 prod-web-01 systemd[1]: redis-server.service: Failed with result 'exit-code'.
+", TERM_FG);
+        cmd(&mut put, "ls -l /var/log/redis");
+        put("total 2140
+", TERM_FG);
+        put("-rw-r----- 1 root adm 2187264 Nov 16 18:44 redis-server.log
+", TERM_FG);
+        cmd(&mut put, "chown redis:redis /var/log/redis/redis-server.log");
+        put(&prompt, OK);
         put(":~# ", TERM_FG);
-        put("█\n\n", ACC);
-        put("Demo mode: no real server behind this host, so there is no shell. Connect to a real host with +.", TX3);
+        put("█
+
+", ACC);
+        put(
+            "Demo host: this terminal is a recording. Connect to a real server with + for a live shell.",
+            TX3,
+        );
         ui.label(job);
     });
 }

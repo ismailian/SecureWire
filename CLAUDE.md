@@ -106,6 +106,7 @@ crates/
 collector/             # collector.sh (bash), probe.sh (POSIX sh) — embedded with include_str!; collector ends with `main "$@"`
 packaging/                 # icons/ (securewire.svg + small variant → PNGs + .ico, committed), securewire.desktop, windows/ (Inno Setup .iss + build-installer.ps1), macos/Info.plist
 LICENSE-MIT, LICENSE-APACHE
+site/                      # website (static HTML/CSS, Cloudflare Pages, output dir `site`): index, docs, 404, _headers; screenshots from `--demo` (site/README.md)
 design/                    # see §1
 ```
 

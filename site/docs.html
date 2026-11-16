@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Docs: getting started with SecureWire</title>
+  <meta name="description" content="Install SecureWire, connect to a server, set up sudo, follow logs, run actions, open tunnels, and use the keyboard shortcuts.">
+  <meta name="theme-color" content="#0c0f13">
+  <link rel="canonical" href="https://securewire-app.pages.dev/docs.html">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="SecureWire">
+  <meta property="og:title" content="SecureWire docs: getting started">
+  <meta property="og:description" content="Install, connect, sudo, logs, actions, tunnels and shortcuts.">
+  <meta property="og:url" content="https://securewire-app.pages.dev/docs.html">
+  <meta property="og:image" content="https://securewire-app.pages.dev/assets/img/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="SecureWire home"><img src="assets/img/logo.svg" alt="" width="30" height="30">SecureWire</a>
+    <button class="nav-toggle" aria-controls="nav" aria-expanded="false" aria-label="Menu"><svg class="icon"><use href="assets/icons.svg#menu"/></svg></button>
+    <nav class="nav" id="nav" aria-label="Main">
+      <a href="./#features">Features</a>
+      <a href="./#how">How it works</a>
+      <a href="./#security">Security</a>
+      <a href="docs.html" aria-current="page">Docs</a>
+      <a href="https://github.com/ismailian/SecureWire">GitHub</a>
+      <a class="btn primary small" href="./#download"><svg class="icon"><use href="assets/icons.svg#download"/></svg>Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main" class="wrap docs">
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ol>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#connect">Connect to a server</a></li>
+      <li><a href="#sudo">Sudo</a></li>
+      <li><a href="#layout">The window</a></li>
+      <li><a href="#services">Services</a></li>
+      <li><a href="#logs">Logs and alerts</a></li>
+      <li><a href="#traffic">Traffic and IPs</a></li>
+      <li><a href="#actions">Actions</a></li>
+      <li><a href="#tunnels">Tunnels</a></li>
+      <li><a href="#shortcuts">Shortcuts</a></li>
+      <li><a href="#config">Configuration</a></li>
+      <li><a href="#server">On the server</a></li>
+      <li><a href="#build">Build from source</a></li>
+    </ol>
+  </aside>
+
+  <article class="prose">
+    <h1>Getting started</h1>
+    <p>SecureWire is a desktop SSH client with live panels for the things you check on every login. This page covers installing it, connecting, and the features you'll use most.</p>
+
+    <h2 id="install">Install</h2>
+    <p>Download the package for your system from the <a href="./#download">download section</a> or the <a href="https://github.com/ismailian/SecureWire/releases">GitHub releases</a>.</p>
+    <table>
+      <thead><tr><th>System</th><th>Package</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Windows 10/11 (x64)</td><td>Installer (<code>…-setup.exe</code>) or portable <code>.zip</code></td><td>The installer is per-user and needs no admin rights. Choose "all users" in it if you prefer. SmartScreen may warn because the app isn't code-signed yet: click <em>More info → Run anyway</em>.</td></tr>
+        <tr><td>Debian, Ubuntu, Mint</td><td><code>.deb</code></td><td><code>sudo apt install ./securewire_1.0.0-1_amd64.deb</code></td></tr>
+        <tr><td>Any Linux (x86_64)</td><td><code>.AppImage</code> or <code>.tar.gz</code></td><td><code>chmod +x securewire-*.AppImage</code>, then run it. Needs OpenGL and X11 or Wayland.</td></tr>
+        <tr><td>macOS 11+ (Apple silicon)</td><td><code>.dmg</code> or <code>.tar.gz</code></td><td>Drag SecureWire to Applications. The app isn't notarized yet, so open it the first time with <em>right-click → Open</em>.</td></tr>
+      </tbody>
+    </table>
+    <p>Want to look around first? <code>securewire --demo</code> opens a demo host with sample data, no server needed. <code>securewire --version</code> prints the version.</p>
+
+    <h2 id="connect">Connect to a server</h2>
+    <p>Click <strong>Connect to a host</strong> on the welcome screen, or <kbd>+</kbd> in the top bar. Fill in:</p>
+    <ul>
+      <li><strong>Address</strong>, <strong>port</strong> and <strong>user</strong>.</li>
+      <li><strong>Authentication</strong>: ssh-agent, a key file (with its passphrase if it has one), or a password. Passwords and passphrases are never saved.</li>
+      <li><strong>Jump host</strong> (optional): another saved host or <code>~/.ssh/config</code> entry to go through, like <code>ProxyJump</code>.</li>
+    </ul>
+    <p><strong>Import ~/.ssh/config</strong> adds your existing hosts in one go.</p>
+    <p>The first time you connect, SecureWire shows the server's host key fingerprint for you to check. Choose to trust it once or always. Known keys come from your own <code>~/.ssh/known_hosts</code> too. If a key changes, the connection stops and does not let you click through.</p>
+    <div class="note"><strong>One connection per host.</strong> Terminal tabs, monitoring, logs, actions and tunnels all share it. If it drops, SecureWire reconnects with backoff, reopens your tabs and resumes logs where they stopped.</div>
+
+    <h2 id="sudo">Sudo</h2>
+    <p>Firewall rules, fail2ban, root-only log files and service actions need root. When you connect as a normal user, SecureWire asks for your sudo password once for the session:</p>
+    <ul>
+      <li>It's kept in memory only and reaches <code>sudo -S</code> through a channel's stdin: never in arguments, the environment, logs or your terminal.</li>
+      <li>The monitoring script then runs under a single <code>sudo</code> for the whole session, so your auth log isn't flooded.</li>
+      <li>Skip it and those sections say "needs sudo". Click <strong>no sudo</strong> in the status bar to be asked again.</li>
+      <li>Logged in as <code>root</code>? Nothing is asked.</li>
+    </ul>
+    <p>You <em>can</em> allow it without a password, but understand what that means. The script runs as <code>sudo -n -- bash -s …</code>, so the rule has to allow <code>bash</code>, which is full root without a password:</p>
+<pre><code># /etc/sudoers.d/securewire: only if you accept passwordless root for this user
+deploy ALL=(root) NOPASSWD: /usr/bin/bash</code></pre>
+    <p>Typing the password once per session is the safer default.</p>
+
+    <h2 id="layout">The window</h2>
+    <div class="frame"><img src="assets/img/hero-1280.webp" width="1920" height="1051" alt="The SecureWire main window with terminal, System panel on the left, Watch panel on the right and the Logs dock at the bottom." loading="lazy"></div>
+    <ul>
+      <li><strong>Top bar</strong>: one tab per host (<kbd>Ctrl</kbd> <kbd>1</kbd>…<kbd>9</kbd>), the command palette, and buttons to show or hide each panel.</li>
+      <li><strong>Terminal</strong> (centre): tabs on the same connection. <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd> opens one. Typing <code>exit</code> closes it.</li>
+      <li><strong>System</strong> (left): host, CPU, memory, disks (click a mount for its largest directories), network, listening ports, tunnels and sessions.</li>
+      <li><strong>Watch</strong> (right): services, firewall, security (fail2ban, failed logins) and scheduled jobs (timers and cron).</li>
+      <li><strong>Dock</strong> (bottom): Logs, Alerts, Processes, Connections and Traffic.</li>
+      <li><strong>Status bar</strong>: who you're logged in as, the host key, round-trip time, refresh rates and how much bandwidth monitoring uses.</li>
+    </ul>
+    <p>Collapse any section you don't need: it stops collecting. When the window is unfocused or minimized, collection slows down. Hosts in background tabs are refreshed less often.</p>
+
+    <h2 id="services">Services</h2>
+    <p>Click <strong>+</strong> in the Services header to choose which systemd units to watch. Three modes:</p>
+    <ul>
+      <li><strong>Live</strong>: systemd pushes state changes, so a crash shows within a second. Memory and PID refresh every 30 s.</li>
+      <li><strong>Poll</strong>: checks on a fixed interval (30 s by default).</li>
+      <li><strong>Manual</strong>: only when you refresh (<kbd>F5</kbd> when the terminal isn't focused).</li>
+    </ul>
+    <p>Click a service for its actions: restart, reload, stop or start; status in the terminal; follow its logs; tunnel one of its ports.</p>
+
+    <h2 id="logs">Logs and alerts</h2>
+    <p>Open the log sources dialog from the Logs toolbar. SecureWire lists the journal units and log files it found on the server. Enable the ones you want, and each gets its own colour. Then:</p>
+    <ul>
+      <li>Filter by level (ERR, WARN, INFO, DBG), by source, or with a regex (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd>).</li>
+      <li>Follow mode keeps the newest line in view.</li>
+      <li>Root-only files are read through sudo.</li>
+      <li>After a reconnect, journal sources resume exactly where they stopped.</li>
+    </ul>
+    <p>The <strong>Alerts</strong> tab collects failed units, disks above 80%, public ports without a firewall rule, a firewall that accepts everything, and more. Each alert has the buttons to deal with it.</p>
+    <div class="frame"><img src="assets/img/alerts.webp" width="1140" height="430" alt="Alerts tab with a failed unit, a disk above 80 percent, and a port without a firewall rule." loading="lazy"></div>
+
+    <h2 id="traffic">Traffic and IPs</h2>
+    <p>Add an nginx or apache <strong>access log</strong> as a log source, and the <strong>Traffic</strong> tab appears. It shows requests by status class, the top clients and recent requests.</p>
+    <p>Click an IP address anywhere (Traffic, a log line, a connection or a banned list) to:</p>
+    <ul>
+      <li>show only that client's requests, or the log lines that mention it;</li>
+      <li>ban or unban it with fail2ban;</li>
+      <li>copy it.</li>
+    </ul>
+
+    <h2 id="actions">Actions</h2>
+    <p>Actions are the only things SecureWire changes on a server, and only when you ask:</p>
+    <table>
+      <thead><tr><th>Action</th><th>Where</th></tr></thead>
+      <tbody>
+        <tr><td>Restart / reload / stop / start a service</td><td>Service menu, alerts, command palette</td></tr>
+        <tr><td>Kill a process (TERM, or KILL)</td><td>Processes tab</td></tr>
+        <tr><td>Ban / unban an IP with fail2ban</td><td>Any IP menu, Security section, palette</td></tr>
+        <tr><td>Largest directories under a path</td><td>Click a disk, alerts, palette (read-only)</td></tr>
+        <tr><td>Who's using a port</td><td>Listening sockets, palette (read-only)</td></tr>
+      </tbody>
+    </table>
+    <p>Before an action that changes anything runs, a dialog shows the exact command line it will send. Nothing else is sent. The output appears in a window when it finishes, and the affected panels refresh.</p>
+    <div class="frame"><img src="assets/img/confirm.webp" width="980" height="300" alt="Confirmation dialog showing the exact systemctl restart command before it runs." loading="lazy"></div>
+
+    <h2 id="tunnels">Tunnels</h2>
+    <p>Reach a service on the server from your own computer, such as a database, Redis or an admin dashboard, without exposing it:</p>
+    <ol>
+      <li>Click a service and choose <strong>Tunnel port N</strong>. Or open <strong>All sockets…</strong> under the listening ports and click <strong>Tunnel</strong>.</li>
+      <li>SecureWire listens on <code>127.0.0.1</code> on your computer. It uses the same port number if it's 1024 or higher, otherwise port + 10000 (MySQL 3306 → 3306, HTTP 80 → 10080).</li>
+      <li>The <strong>Tunnels</strong> list in the System panel shows each one. Copy its address, open it in your browser, or close it.</li>
+    </ol>
+    <p>Tunnels use the host's existing SSH connection (like <code>ssh -L</code>) and survive reconnects. Other machines on your network can't use them.</p>
+
+    <h2 id="shortcuts">Keyboard shortcuts</h2>
+    <p>App shortcuts use <kbd>Ctrl</kbd> <kbd>Shift</kbd> so that everything else reaches your shell: <kbd>Ctrl</kbd> <kbd>B</kbd> for tmux, <kbd>Ctrl</kbd> <kbd>C</kbd>, <kbd>Ctrl</kbd> <kbd>R</kbd> and so on.</p>
+    <table>
+      <thead><tr><th>Keys</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd></td><td>Command palette</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd> / <kbd>W</kbd></td><td>New / close terminal tab</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Tab</kbd> / <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Tab</kbd></td><td>Next / previous terminal tab</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>1</kbd>…<kbd>9</kbd></td><td>Switch host</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>B</kbd> / <kbd>R</kbd> / <kbd>J</kbd></td><td>Toggle left / right / bottom panel</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></td><td>Focus the logs filter</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>C</kbd> / <kbd>Ctrl</kbd> <kbd>V</kbd></td><td>Copy / paste in the terminal (plain <kbd>Ctrl</kbd> <kbd>C</kbd> copies only while text is selected)</td></tr>
+        <tr><td><kbd>Shift</kbd> <kbd>PageUp</kbd> / <kbd>PageDown</kbd></td><td>Scroll terminal history</td></tr>
+        <tr><td><kbd>F5</kbd></td><td>Refresh every section now (when the terminal isn't focused)</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close a dialog or the palette, back to the terminal</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="config">Configuration</h2>
+    <p>Saved hosts, watched services and log sources live in <code>hosts.toml</code>:</p>
+    <table>
+      <tbody>
+        <tr><th>Windows</th><td><code>%APPDATA%\SecureWire\SecureWire\config\</code></td></tr>
+        <tr><th>Linux</th><td><code>~/.config/securewire/</code></td></tr>
+        <tr><th>macOS</th><td><code>~/Library/Application Support/dev.SecureWire.SecureWire/</code></td></tr>
+      </tbody>
+    </table>
+<pre><code>[[host]]
+name = "prod-web-01"
+address = "203.0.113.10"
+port = 22
+user = "deploy"
+auth = "agent"            # agent | key | password (prompted, never stored)
+jump = ""                 # optional: another host to go through
+
+[host.services]
+mode = "live"             # live | poll | manual
+units = ["nginx.service", "mysql.service", "fail2ban.service"]
+
+[[host.logs]]
+id = "nginx-access"
+kind = "file"             # journal | file | sudo-file
+target = "/var/log/nginx/access.log"</code></pre>
+    <p>Host keys you trust are saved to SecureWire's own <code>known_hosts</code> in the same folder. Your OpenSSH file is never modified. Uninstalling the app keeps this folder; delete it to remove your saved hosts.</p>
+
+    <h2 id="server">What runs on the server</h2>
+    <p>Nothing is installed or written. While you're connected, the server runs:</p>
+    <ul>
+      <li>your shell, one per terminal tab;</li>
+      <li>one <code>bash</code> process reading the monitoring script from SSH (under one <code>sudo</code> if you gave a password). It reads <code>/proc</code> and runs the usual tools: <code>df</code>, <code>ss</code>, <code>systemctl</code>, <code>ufw</code> / <code>nft</code> / <code>iptables</code>, <code>fail2ban-client</code>;</li>
+      <li><code>journalctl -f</code> and <code>tail -F</code> for the logs you follow;</li>
+      <li>short-lived commands for actions you confirmed.</li>
+    </ul>
+    <p>All of it ends when you disconnect. On a 2-vCPU VM this costs about 0.3% of one CPU core and under 1 KB/s of traffic with the default panels open. The protocol is documented in <a href="https://github.com/ismailian/SecureWire/blob/main/design/collector-protocol.md">collector-protocol.md</a>.</p>
+
+    <h2 id="build">Build from source</h2>
+    <p>You need a stable Rust toolchain, 1.90 or later. On Linux, also install <code>libxkbcommon-dev libwayland-dev libgl1-mesa-dev</code>.</p>
+<pre><code>git clone https://github.com/ismailian/SecureWire.git
+cd SecureWire
+cargo run --release -p securewire          # the app
+cargo run --release -p securewire -- --demo  # with the demo host</code></pre>
+    <p>On Windows, <code>packaging\windows\build-installer.ps1</code> builds the installer with Inno Setup 6. For the architecture, tests and design notes, see <a href="https://github.com/ismailian/SecureWire/blob/main/CLAUDE.md">CLAUDE.md</a> and the <a href="https://github.com/ismailian/SecureWire/tree/main/design">design folder</a>.</p>
+    <div class="note">Found a bug or missing something? <a href="https://github.com/ismailian/SecureWire/issues">Open an issue</a>.</div>
+  </article>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/img/logo.svg" alt="" width="24" height="24">SecureWire</a>
+    <span>© <span id="year">2026</span> The SecureWire authors · MIT or Apache-2.0</span>
+    <nav aria-label="Footer">
+      <a href="./#download">Download</a>
+      <a href="https://github.com/ismailian/SecureWire/releases">Releases</a>
+      <a href="https://github.com/ismailian/SecureWire/issues">Report an issue</a>
+      <a href="https://github.com/ismailian/SecureWire">Source</a>
+    </nav>
+  </div>
+</footer>
+<script src="assets/site.js" defer></script>
+</body>
+</html>

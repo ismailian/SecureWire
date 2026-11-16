@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureWire: a desktop SSH workstation for your Linux servers</title>
+  <meta name="description" content="A terminal with live panels for CPU, memory, disks, services, firewall, fail2ban, logs and web traffic, all over one SSH connection. Nothing is installed on your server. Free and open source for Windows, Linux and macOS.">
+  <meta name="theme-color" content="#0c0f13">
+  <link rel="canonical" href="https://securewire-app.pages.dev/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SecureWire">
+  <meta property="og:title" content="SecureWire: a desktop SSH workstation for your Linux servers">
+  <meta property="og:description" content="Terminal plus live panels for resources, services, firewall, fail2ban and logs over one SSH connection. Nothing to install on the server.">
+  <meta property="og:url" content="https://securewire-app.pages.dev/">
+  <meta property="og:image" content="https://securewire-app.pages.dev/assets/img/og.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preload" href="assets/img/hero-1280.webp" as="image" type="image/webp" imagesrcset="assets/img/hero-1280.webp 1280w, assets/img/hero.webp 1920w" imagesizes="(min-width: 1220px) 1180px, 100vw">
+  <link rel="stylesheet" href="assets/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "SecureWire",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows 10, Windows 11, Linux, macOS",
+    "softwareVersion": "1.0.0",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "license": "https://github.com/ismailian/SecureWire/blob/main/LICENSE-MIT",
+    "url": "https://securewire-app.pages.dev/",
+    "downloadUrl": "https://github.com/ismailian/SecureWire/releases/tag/v1.0.0"
+  }
+  </script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="SecureWire home"><img src="assets/img/logo.svg" alt="" width="30" height="30">SecureWire</a>
+    <button class="nav-toggle" aria-controls="nav" aria-expanded="false" aria-label="Menu"><svg class="icon"><use href="assets/icons.svg#menu"/></svg></button>
+    <nav class="nav" id="nav" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#security">Security</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/ismailian/SecureWire">GitHub</a>
+      <a class="btn primary small" href="#download"><svg class="icon"><use href="assets/icons.svg#download"/></svg>Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="wrap">
+      <span class="eyebrow">v1.0.0 · free and open source</span>
+      <h1>Your servers, <span>at a glance</span>, in one SSH window.</h1>
+      <p class="lede">SecureWire is a desktop SSH workstation. You get a real terminal in the middle and live panels around it: resources, services, firewall, fail2ban, logs and web traffic. It all runs over one SSH connection, and nothing is installed on your server.</p>
+      <div class="cta">
+        <a class="btn primary" href="#download" data-os-download><svg class="icon"><use href="assets/icons.svg#download"/></svg><span data-label>Download</span></a>
+        <a class="btn" href="https://github.com/ismailian/SecureWire"><svg class="icon"><use href="assets/icons.svg#code"/></svg>View source</a>
+      </div>
+      <p class="cta-note">Windows, Linux and macOS · servers: any Linux with bash and OpenSSH · <a href="#download">all downloads</a></p>
+
+      <figure class="shot">
+        <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>SecureWire</span></div>
+        <img src="assets/img/hero-1280.webp" srcset="assets/img/hero-1280.webp 1280w, assets/img/hero.webp 1920w" sizes="(min-width: 1220px) 1180px, 100vw" width="1920" height="1051" alt="SecureWire's main window. A terminal shows a failed redis-server unit. The left panel shows host details, CPU, memory, disk and network. The right panel lists services, ufw rules and fail2ban jails. The bottom dock streams colour-coded logs from nginx, mysql, fail2ban, sshd and php-fpm." fetchpriority="high">
+      </figure>
+      <p class="caption">The real app, showing its built-in demo host (sample data, no server needed: <code>securewire --demo</code>).</p>
+    </div>
+  </div>
+
+  <!-- Numbers -->
+  <section style="padding-top: 40px; padding-bottom: 64px;" aria-label="Measured numbers">
+    <div class="wrap">
+      <div class="stats reveal">
+        <div class="stat"><b>0</b><span>files installed or written on the server</span></div>
+        <div class="stat"><b>1</b><span>SSH connection per host, for everything</span></div>
+        <div class="stat"><b>~0.3%</b><span>of one CPU core for monitoring on the server</span></div>
+        <div class="stat"><b>&lt;1 KB/s</b><span>monitoring traffic per host</span></div>
+        <div class="stat"><b>50 MB</b><span>memory on your computer</span></div>
+        <div class="stat"><b>12 MB</b><span>app, no runtime to install</span></div>
+      </div>
+      <p class="stats-note">Measured on a 2-vCPU Ubuntu VM with the default panels open, and a Windows client.</p>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="alt" id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Features</span>
+        <h2>The commands you type every day, kept on screen</h2>
+        <p>No more <code>free -h</code>, <code>df -h</code>, <code>systemctl status</code>, <code>journalctl -u</code> and <code>fail2ban-client status</code> on every login. SecureWire keeps the answers live next to your shell.</p>
+      </div>
+
+      <div class="feature reveal">
+        <div class="feature-text">
+          <h3>A real terminal, with live panels around it</h3>
+          <p>Terminal tabs run vim, htop and tmux like any good terminal. Around them, panels update in place: CPU per core, memory, disks, network, listening ports and who's logged in.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Several terminal tabs per host, all on the same connection</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Several hosts side by side, <kbd>Ctrl</kbd> <kbd>1</kbd>…<kbd>9</kbd> to switch</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Click a disk to see its largest directories</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/img/panels.webp" width="1000" height="750" alt="System panel next to the terminal: host details, CPU at 49 percent with per-core bars and a sparkline, memory and swap, disks with /var/lib/mysql at 81 percent in amber, network rates, and a terminal showing systemctl status for a failed redis-server unit." loading="lazy"></div>
+      </div>
+
+      <div class="feature flip reveal">
+        <div class="feature-text">
+          <h3>Services, firewall and fail2ban, side by side</h3>
+          <p>Pick the units you care about. In Live mode, systemd pushes state changes, so a crash shows up within a second. The firewall section reads ufw, nftables or iptables, and the security section shows each fail2ban jail with its banned IPs.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Failed units jump to the top in red</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Warns when a port is public with no firewall rule</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Failed SSH logins over the last 24 hours</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/img/watchwide.webp" width="1000" height="750" alt="Watch panel beside the terminal: services with redis-server failed and highlighted in red, then fail2ban, mysql, nginx and php-fpm running with memory and PID; below, ufw active with incoming deny and the allow rules." loading="lazy"></div>
+      </div>
+
+      <div class="feature reveal">
+        <div class="feature-text">
+          <h3>Logs from everywhere, in one stream</h3>
+          <p>SecureWire finds your journal units and log files, then follows the ones you pick in one colour-coded stream. Filter by level or regex, and pick up where you left off after a reconnect. Alerts collect what needs attention, each with a one-click fix.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>journald, plain files, and root-only files through sudo</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Alerts: failed units, full disks, unprotected ports</li>
+          </ul>
+        </div>
+        <div class="frame-pair">
+          <div class="frame"><img src="assets/img/alerts.webp" width="1140" height="430" alt="Alerts tab with three alerts: redis-server.service failed, with Logs and Restart buttons; /var/lib/mysql above 80 percent, with a Largest dirs button; and redis-server listening on 0.0.0.0:6379 without a firewall rule." loading="lazy"></div>
+        </div>
+      </div>
+
+      <div class="feature flip reveal">
+        <div class="feature-text">
+          <h3>Web traffic, and one click from an IP to a ban</h3>
+          <p>Add an nginx or apache access log and the Traffic tab shows requests as they arrive: top clients, status codes and paths. Click any IP, in traffic or in a log line, to filter by it or ban it with fail2ban.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Spot the scanner hammering <code>/wp-login.php</code></li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Ban and unban without typing the jail name</li>
+          </ul>
+        </div>
+        <div class="frame-pair">
+          <div class="frame"><img src="assets/img/traffic.webp" width="1140" height="430" alt="Traffic tab: 30 requests with counts per status class, top clients by IP with error counts and paths, and a list of recent requests with status codes." loading="lazy"></div>
+          <div class="frame inset"><img src="assets/img/ipmenu.webp" width="640" height="280" alt="Menu for the IP 192.0.2.44: only this client's requests, log lines mentioning it, ban it in the sshd jail, or copy it." loading="lazy"></div>
+        </div>
+      </div>
+
+      <div class="feature reveal">
+        <div class="feature-text">
+          <h3>Actions that show you the exact command first</h3>
+          <p>Restart a service, kill a process, ban an IP. Before anything runs, SecureWire shows the exact command line it will send and waits for you. Nothing else is sent. Arguments are validated and quoted, never pasted into a shell string.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Restart, stop, start and reload services</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Kill processes, see who's on a port</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/img/confirm.webp" width="980" height="300" alt="Confirmation dialog: Restart redis-server. Runs on the server as root through sudo: systemctl restart -- 'redis-server.service'. The exact command line is shown below, followed by Cancel and Restart buttons." loading="lazy"></div>
+      </div>
+
+      <div class="feature flip reveal">
+        <div class="feature-text">
+          <h3>Command palette and one-click tunnels</h3>
+          <p>Press <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> and type: restart a unit, tail a file, ban an IP, open a log. Right-click a service or port to tunnel it to your computer, such as MySQL, Redis or an admin dashboard. The tunnel listens on <code>127.0.0.1</code> only and uses the same SSH connection.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Imports your <code>~/.ssh/config</code>, jump hosts included</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Keys, ssh-agent or password</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/img/palette.webp" width="980" height="330" alt="Command palette with the query restart, listing Restart mysql, Restart nginx, Restart service…, Restart redis-server and more." loading="lazy"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">How it works</span>
+        <h2>Nothing to install on the server. Really.</h2>
+        <p>No agent, no daemon, no open port. When you connect, a small bash script is streamed over SSH and runs from memory. It sends back plain text and stops when you disconnect.</p>
+      </div>
+      <div class="flow reveal">
+        <div class="node">
+          <h3><svg class="icon"><use href="assets/icons.svg#laptop"/></svg>Your computer</h3>
+          <p>SecureWire parses the data, works out rates and alerts, and draws the panels. The window only redraws when something changes.</p>
+        </div>
+        <div class="pipe" aria-hidden="true">
+          <b>one SSH connection</b>
+          <span class="line"></span>
+          <small>host key checked · keepalive · auto-reconnect</small>
+        </div>
+        <div class="node">
+          <h3><svg class="icon"><use href="assets/icons.svg#server"/></svg>Your Linux server</h3>
+          <p>Every feature is a channel on that one connection:</p>
+          <ul class="channels">
+            <li><code>shell</code>your terminal tabs</li>
+            <li><code>bash -s</code>the monitoring script, streamed on stdin</li>
+            <li><code>journalctl</code>log units you follow, resumed by cursor</li>
+            <li><code>tail -F</code>log files, through sudo if root-only</li>
+            <li><code>exec</code>actions you confirmed</li>
+            <li><code>direct-tcpip</code>your tunnels</li>
+          </ul>
+        </div>
+      </div>
+      <div class="grid c3" style="margin-top: 28px;">
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#eye-off"/></svg></span><h3>Pays only for what you see</h3><p>Collapse a section and its collection stops. Unfocused or minimized windows slow everything down.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#zap"/></svg></span><h3>Light on the server</h3><p>About 0.3% of one core and under 1 KB/s with the default panels. Expensive checks only run when their data changes.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#layers"/></svg></span><h3>Works on stock servers</h3><p>Needs bash and OpenSSH. Uses systemd, ufw, nftables, iptables and fail2ban if they are there, and skips them if not.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Security -->
+  <section class="alt" id="security">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Security</span>
+        <h2>Built for the people who hold the root password</h2>
+        <p>A tool that sits between you and production should be boring about security. Here is what SecureWire does, and what it never does.</p>
+      </div>
+      <div class="grid c3">
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#key"/></svg></span><h3>Host keys verified</h3><p>Checked against your <code>~/.ssh/known_hosts</code>. A new key is shown for you to approve. A changed key is a hard stop, not a warning.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#lock"/></svg></span><h3>Passwords never stored</h3><p>Your sudo password is asked once per session and kept only in memory. It reaches <code>sudo -S</code> only through a channel's stdin, never in arguments, environment or logs.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#shield"/></svg></span><h3>One sudo per session</h3><p>The monitoring script runs under a single <code>sudo</code>, so your auth log doesn't fill with an entry every few seconds.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#terminal"/></svg></span><h3>Fixed command templates</h3><p>Every remote command comes from a fixed template with validated, quoted arguments. Anything that changes the server is shown and confirmed first.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#logs"/></svg></span><h3>Remote text is untrusted</h3><p>Log lines, unit names and window titles are stripped of control characters before they are drawn outside the terminal.</p></div>
+        <div class="card reveal"><span class="badge-icon"><svg class="icon"><use href="assets/icons.svg#globe"/></svg></span><h3>No telemetry, no accounts</h3><p>SecureWire talks to your servers and nothing else. Saved hosts live in a local file, without passwords. The code is open for you to check.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section id="download">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Download</span>
+        <h2>Get SecureWire 1.0.0</h2>
+        <p>Free and open source under MIT or Apache-2.0. Each download is a single small app with nothing else to install.</p>
+      </div>
+      <div class="downloads">
+        <article class="dl reveal" id="dl-windows">
+          <header><svg class="icon"><use href="assets/icons.svg#monitor"/></svg><h3>Windows</h3><span class="tag">Your system</span></header>
+          <p class="req">Windows 10 or 11, 64-bit</p>
+          <ul class="files">
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-windows-x86_64-setup.exe"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Installer<small>per-user, no admin needed</small></span><em>5.9 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-windows-x86_64-portable.zip"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>Portable .zip<small>run from any folder</small></span><em>5.5 MB</em></a></li>
+          </ul>
+          <p class="hint">Not code-signed yet: SmartScreen may ask you to confirm (More info → Run anyway).</p>
+        </article>
+        <article class="dl reveal" id="dl-linux">
+          <header><svg class="icon"><use href="assets/icons.svg#terminal"/></svg><h3>Linux</h3><span class="tag">Your system</span></header>
+          <p class="req">x86_64, X11 or Wayland</p>
+          <ul class="files">
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire_1.0.0-1_amd64.deb"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>.deb package<small>Debian, Ubuntu, Mint</small></span><em>5.2 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-linux-x86_64.AppImage"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>AppImage<small>any distribution</small></span><em>7.5 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-linux-x86_64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>7.2 MB</em></a></li>
+          </ul>
+          <p class="hint">AppImage: <code>chmod +x</code> it first.</p>
+        </article>
+        <article class="dl reveal" id="dl-macos">
+          <header><svg class="icon"><use href="assets/icons.svg#laptop"/></svg><h3>macOS</h3><span class="tag">Your system</span></header>
+          <p class="req">macOS 11 or later, Apple silicon</p>
+          <ul class="files">
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-macos-aarch64.dmg"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Disk image (.dmg)<small>drag to Applications</small></span><em>5.7 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-macos-aarch64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>5.0 MB</em></a></li>
+          </ul>
+          <p class="hint">Not notarized yet: open it the first time with right-click → Open.</p>
+        </article>
+      </div>
+      <p class="dl-foot">Check your download against <a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/ismailian/SecureWire/releases">all releases</a> · <a href="docs.html#build">build from source</a></p>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="alt" id="faq">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">FAQ</span>
+        <h2>Questions people ask</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Do I need to install anything on my server?</summary>
+          <div><p>No. SecureWire only needs SSH access. The monitoring script is streamed over the connection and runs from memory with <code>bash -s</code>. Nothing is written to disk, and nothing keeps running after you disconnect.</p></div>
+        </details>
+        <details>
+          <summary>What does the server need?</summary>
+          <div><p>Linux with OpenSSH and bash. Services need systemd. The firewall section reads ufw, nftables or iptables. The security section uses fail2ban if it's installed. Anything missing is skipped and the rest still works.</p></div>
+        </details>
+        <details>
+          <summary>Why does it ask for my sudo password, and where does it go?</summary>
+          <div><p>Firewall rules, fail2ban, root-only logs and service actions need root. SecureWire asks once per session and keeps the password in memory only. It goes straight to <code>sudo -S</code> on a channel's stdin, never to disk, the command line or logs. You can skip it, and those sections then say they need sudo. If you log in as root, nothing is asked.</p></div>
+        </details>
+        <details>
+          <summary>Can it change my server by itself?</summary>
+          <div><p>No. It only reads, until you start an action such as restart a service, kill a process or ban an IP. Then it shows the exact command and waits for you to confirm. It never edits firewall rules or config files.</p></div>
+        </details>
+        <details>
+          <summary>Does it work with my keys, ssh-agent and <code>~/.ssh/config</code>?</summary>
+          <div><p>Yes. You can log in with a key file, ssh-agent or a password, and import hosts from <code>~/.ssh/config</code>, including <code>ProxyJump</code> jump hosts.</p></div>
+        </details>
+        <details>
+          <summary>Why does Windows SmartScreen or macOS warn me?</summary>
+          <div><p>The 1.0.0 packages are not code-signed or notarized yet. You can check each file against <code>SHA256SUMS</code> on the release page, or <a href="docs.html#build">build it from source</a>.</p></div>
+        </details>
+        <details>
+          <summary>Is it free?</summary>
+          <div><p>Yes. SecureWire is open source under the MIT or Apache-2.0 licence, at your option. No account, no telemetry, no paid tier.</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="final">
+    <div class="wrap">
+      <img src="assets/img/logo.svg" alt="" width="72" height="72" style="margin: 0 auto 22px;">
+      <h2>Stop retyping the same ten commands</h2>
+      <p class="lede">Try it without a server: run <code>securewire --demo</code> after installing.</p>
+      <div class="cta">
+        <a class="btn primary" href="#download" data-os-download><svg class="icon"><use href="assets/icons.svg#download"/></svg><span data-label>Download</span></a>
+        <a class="btn" href="docs.html"><svg class="icon"><use href="assets/icons.svg#logs"/></svg>Read the docs</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/img/logo.svg" alt="" width="24" height="24">SecureWire</a>
+    <span>© <span id="year">2026</span> The SecureWire authors · MIT or Apache-2.0</span>
+    <nav aria-label="Footer">
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/ismailian/SecureWire/releases">Releases</a>
+      <a href="https://github.com/ismailian/SecureWire/issues">Report an issue</a>
+      <a href="https://github.com/ismailian/SecureWire">Source</a>
+    </nav>
+  </div>
+</footer>
+<script src="assets/site.js" defer></script>
+</body>
+</html>

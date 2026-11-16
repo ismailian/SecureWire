@@ -6,6 +6,8 @@ A desktop SSH workstation for people who look after their own Linux servers. It 
 
 Rust · egui · russh · alacritty_terminal. Windows, Linux and macOS clients; Linux servers.
 
+**Website and docs:** https://securewire-app.pages.dev/
+
 ## What you get
 
 - **Terminal tabs** (vi, htop, tmux…), each a channel on the host's single SSH connection.
