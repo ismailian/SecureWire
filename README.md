@@ -37,6 +37,19 @@ Collection follows what you can see. Closed sections stop collecting, and an unf
 
 Details: [`design/collector-protocol.md`](design/collector-protocol.md) and [`design/decisions.md`](design/decisions.md).
 
+### Sudo
+
+Firewall, fail2ban, root-only logs and the service actions need root. SecureWire asks for your sudo password once per session and never stores it. Clicking "no sudo" in the status bar asks again.
+
+You *can* let it in without a password by granting `NOPASSWD`. Be aware what that means: with sudo, the monitoring script runs as `sudo -n -- bash -s …`, so the rule has to allow `bash`, which amounts to full root without a password:
+
+```
+# /etc/sudoers.d/securewire — only if you accept passwordless root for this user
+deploy ALL=(root) NOPASSWD: /usr/bin/bash
+```
+
+Entering the password per session is the safer default. Hosts where you log in as `root` need neither.
+
 ## Install
 
 Download a package from the [releases](../../releases): Windows `.zip`, Linux `.tar.gz` or `.deb`, or macOS `.tar.gz`.

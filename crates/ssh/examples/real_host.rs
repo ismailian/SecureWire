@@ -378,27 +378,31 @@ fn main() {
         });
     }
     // Every collector process (sudo parent + bash), own + reaped children's CPU, over 60 s.
-    typ(
-        &run,
-        "clear; T=$(getconf CLK_TCK); t() { s=0; for p in $(pgrep -f securewire-collector); do v=$(awk '{print $14+$15+$16+$17}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }; ps -o pid,user,args -p \"$(pgrep -d, -f securewire-collector)\"; a=$(t); sleep 60; b=$(t); echo CPU-RESULT ticks=$((b-a)) hz=$T over=60s\r",
-    );
-    screen_wait(
-        &mut run,
-        &term,
-        &["CPU-RESULT ticks"],
-        Duration::from_secs(75),
-    );
-    println!(
-        "{}",
-        term.screen_text()
-            .lines()
-            .filter(|l| l.contains("CPU-RESULT ticks") || l.contains("securewire-collector"))
-            .collect::<Vec<_>>()
-            .join(
-                "
+    // Skipped in strict mode (CI): it only checks that everything works, and this is a 60 s sleep.
+    let measure = std::env::var_os("SW_REAL_STRICT").is_none();
+    if measure {
+        typ(
+            &run,
+            "clear; T=$(getconf CLK_TCK); t() { s=0; for p in $(pgrep -f securewire-collector); do v=$(awk '{print $14+$15+$16+$17}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }; ps -o pid,user,args -p \"$(pgrep -d, -f securewire-collector)\"; a=$(t); sleep 60; b=$(t); echo CPU-RESULT ticks=$((b-a)) hz=$T over=60s\r",
+        );
+        screen_wait(
+            &mut run,
+            &term,
+            &["CPU-RESULT ticks"],
+            Duration::from_secs(75),
+        );
+        println!(
+            "{}",
+            term.screen_text()
+                .lines()
+                .filter(|l| l.contains("CPU-RESULT ticks") || l.contains("securewire-collector"))
+                .collect::<Vec<_>>()
+                .join(
+                    "
 "
-            )
-    );
+                )
+        );
+    }
     println!(
         "last Link: {}",
         run.last.get("Link").map_or("-", |s| s.as_str())
