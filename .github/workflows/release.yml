@@ -1,0 +1,72 @@
+name: Release
+
+# Push a tag like v0.1.0 to build packages; they are attached to a DRAFT release,
+# which a maintainer reviews and publishes.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          - os: ubuntu-22.04 # older glibc → runs on more distributions
+            name: linux-x86_64
+          - os: macos-14
+            name: macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - run: cargo build --release -p securewire
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path target/release/securewire.exe -DestinationPath "dist/securewire-${{ github.ref_name }}-${{ matrix.name }}.zip"
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf "dist/securewire-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" securewire
+      - name: .deb (Linux)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Build .deb
+        if: runner.os == 'Linux'
+        run: cargo deb -p securewire --no-build --output dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securewire-${{ matrix.name }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*

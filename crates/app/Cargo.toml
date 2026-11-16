@@ -21,3 +21,14 @@ sw-term.workspace = true
 secrecy.workspace = true
 directories.workspace = true
 parking_lot.workspace = true
+
+# `cargo deb -p securewire` (release workflow).
+[package.metadata.deb]
+name = "securewire"
+maintainer = "SecureWire developers"
+section = "net"
+extended-description = "Desktop SSH workstation: an interactive terminal with live panels (resources, services, firewall, security, logs) over one SSH connection per host. Nothing is installed on the servers."
+assets = [
+    ["target/release/securewire", "usr/bin/", "755"],
+    ["../../packaging/securewire.desktop", "usr/share/applications/", "644"],
+]

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux — shellcheck, fmt, clippy, tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y shellcheck libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - name: shellcheck (the scripts that run on servers)
+        run: |
+          shellcheck -s bash collector/collector.sh collector/discover.sh
+          shellcheck -s sh collector/probe.sh
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Real bash and a real /proc next to the fake host fixtures.
+      - run: cargo test --workspace
+
+  windows:
+    name: Windows — tests (Git Bash)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  real-sshd:
+    name: Real OpenSSH + sudo (real_host strict)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: sshd with a throwaway password user in the sudo group
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-server htop
+          PW=$(openssl rand -hex 16)
+          echo "::add-mask::$PW"
+          sudo useradd -m -s /bin/bash swtest
+          echo "swtest:$PW" | sudo chpasswd
+          sudo usermod -aG sudo swtest
+          # sshd keeps the first value it reads: this file must sort before 50-cloud-init.conf.
+          echo 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/00-swtest.conf
+          sudo systemctl restart ssh.socket ssh.service 2>/dev/null || sudo systemctl restart ssh
+          echo "SW_REAL_PASS=$PW" >> "$GITHUB_ENV"
+      - name: real_host against 127.0.0.1 (probe, sudo, every section, logs, actions, PTY)
+        env:
+          SW_REAL: swtest@127.0.0.1
+          SW_REAL_STRICT: "1"
+        run: cargo run -p securewire-ssh --example real_host

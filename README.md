@@ -1,0 +1,64 @@
+# SecureWire
+
+A desktop SSH workstation for people who look after their own Linux servers. It puts an interactive terminal in the middle, with live panels around it for the things you would otherwise type every time: `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status`, `fail2ban-client status`…
+
+Rust · egui · russh · alacritty_terminal. Windows, Linux and macOS clients; Linux servers.
+
+## What you get
+
+- **Terminal tabs** (vi, htop, tmux…), each a channel on the host's single SSH connection.
+- **System**: CPU, memory, disks (click a mount for its largest directories), network rates, listening ports, sessions.
+- **Watch**:
+  - services you choose, live (systemd pushes state changes) or polled;
+  - firewall (ufw / nftables / iptables);
+  - fail2ban jails and failed logins over 24 h;
+  - timers and cron.
+- **Logs**:
+  - journal units and log files, found for you;
+  - level and regex filters, follow;
+  - resumes where it left off after a reconnect.
+- **Traffic**: requests from nginx/apache access logs, top clients, status codes. Ban or unban an IP in one click.
+- **Actions with confirmation**: restart / stop / reload services, kill processes, ban and unban IPs. The dialog shows the exact command first.
+- **One-click tunnels**: right-click a service or a port to reach it from your computer (MySQL, Redis, a web dashboard). It listens on `127.0.0.1` only and uses the same SSH connection.
+- **Command palette** (`Ctrl Shift P`), `~/.ssh/config` import, jump hosts (ProxyJump).
+
+## What it does on your server
+
+**Nothing is installed or written there.** On connect, a short probe and a small bash script are streamed over SSH and run from memory (`bash -s`). The script sends back plain text that the app parses. Everything runs over **one SSH connection per host**: terminal tabs, metrics, log tails, actions and tunnels are channels on it.
+
+Collection follows what you can see. Closed sections stop collecting, and an unfocused or minimized window slows collection down. On a small 2-vCPU VM the script costs about 0.4 % of one core with the default panels open, and monitoring traffic is under 1 KB/s.
+
+## Security model
+
+- **Host keys** are verified against `~/.ssh/known_hosts` and SecureWire's own known_hosts. A new key is shown for you to approve; a changed key is a hard stop.
+- **Passwords are never stored.** The sudo password is asked once per session, kept only in memory, and reaches `sudo -S` only through a channel's stdin: never argv, the environment, logs or your terminal. With sudo, the monitoring script runs under a single `sudo` for the session, so your auth log isn't flooded.
+- **Every remote command** is a fixed template with validated, quoted arguments. Anything that changes the server is confirmed first.
+- **Remote text** (log lines, unit names, window titles) is treated as untrusted and stripped of control characters before it is drawn outside the terminal.
+
+Details: [`design/collector-protocol.md`](design/collector-protocol.md) and [`design/decisions.md`](design/decisions.md).
+
+## Install
+
+Download a package from the [releases](../../releases): Windows `.zip`, Linux `.tar.gz` or `.deb`, or macOS `.tar.gz`.
+
+Or build from source with a stable Rust toolchain (1.90 or later):
+
+```bash
+cargo run --release -p securewire
+```
+
+On Linux, building needs `libxkbcommon-dev libwayland-dev libgl1-mesa-dev`.
+
+Try it without a server: `cargo run -p securewire -- --demo`.
+
+## Configuration
+
+Saved hosts, watched services and log sources live in `hosts.toml`:
+- Windows: `%APPDATA%\SecureWire\SecureWire\config`
+- Linux: `~/.config/securewire`
+
+Passwords never go into that file.
+
+## Development
+
+See [`CLAUDE.md`](CLAUDE.md) for the architecture, rules, commands and test strategy, and [`design/`](design/) for the UI spec, tokens and protocol. CI runs shellcheck, clippy and the tests on Linux and Windows, plus an end-to-end check against a real OpenSSH server with sudo.

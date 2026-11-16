@@ -230,14 +230,10 @@ fn main() {
     });
     run.pump(Duration::from_secs(6), |_| false);
     typ(&run, "echo SW-MARK-$((40+2)); stty size\r");
-    println!(
-        "pty echo: {:?}",
-        screen_wait(&mut run, &term, &["SW-MARK-42"], Duration::from_secs(5))
-    );
-    println!(
-        "stty: {:?}",
-        screen_wait(&mut run, &term, &["36 120"], Duration::from_secs(3))
-    );
+    let echo = screen_wait(&mut run, &term, &["SW-MARK-42"], Duration::from_secs(5));
+    println!("pty echo: {echo:?}");
+    let stty = screen_wait(&mut run, &term, &["36 120"], Duration::from_secs(3));
+    println!("stty: {stty:?}");
 
     typ(
         &run,
@@ -422,6 +418,34 @@ fn main() {
     println!("\nevent counts after {} s:", t0.elapsed().as_secs());
     for (k, n) in &run.counts {
         println!("  {k:<16} {n}");
+    }
+    // SW_REAL_STRICT=1 (CI against a real sshd): every part must have worked.
+    if std::env::var_os("SW_REAL_STRICT").is_some() {
+        let mut missing = Vec::new();
+        for k in [
+            "Probe", "Static", "Cpu", "Mem", "Net", "DiskIo", "Mounts", "Processes", "Listeners", "Services",
+            "LogCandidates", "LogSources",
+        ] {
+            if !run.counts.contains_key(k) {
+                missing.push(k.to_owned());
+            }
+        }
+        if echo.is_none() || stty.is_none() {
+            missing.push("PTY echo / resize".into());
+        }
+        if run.last.get("Sudo").map(String::as_str) != Some("Sudo(Password)") {
+            missing.push(format!("sudo password mode (got {:?})", run.last.get("Sudo")));
+        }
+        for id in [1, 2] {
+            if !run.results.get(&id).is_some_and(|r| r.0) {
+                missing.push(format!("action {id}"));
+            }
+        }
+        if !got {
+            missing.push("log lines".into());
+        }
+        assert!(missing.is_empty(), "real-host check failed: {missing:?}");
+        println!("STRICT: all parts worked");
     }
     let _ = std::fs::remove_dir_all(&kh);
     drop(run);

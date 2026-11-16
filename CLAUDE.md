@@ -234,7 +234,7 @@ cargo run -p securewire -- --demo             # app fed by recorded collector fr
 cargo test --workspace                        # unit + fixture tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-shellcheck -s bash collector/collector.sh && shellcheck -s sh collector/probe.sh   # not installed on the dev machine yet
+shellcheck -s bash collector/collector.sh collector/discover.sh && shellcheck -s sh collector/probe.sh   # runs in CI (not installed on the dev machine)
 cargo test -p securewire-ssh --test collector  # collector.sh under local bash (Git Bash on Windows; SW_TEST_BASH overrides)
 SW_FRAME_STATS=frames.txt cargo run --release -p securewire   # append repaints-per-10s to a file (perf checks)
 cargo run -p securewire -- --connect user@host[:port] [--key PATH]   # pre-filled Connect dialog
@@ -247,7 +247,9 @@ SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_ho
 
 - **Parsers (`core`)**: table-driven tests over `tests/fixtures/<distro>/` captured from real machines, including edge cases (many cores, no swap, IPv6-only, `ufw inactive`, `fail2ban` not installed, unit names with `@`, non-UTF-8 log bytes).
 - **Frame decoder**: fuzz-style tests for partial reads, frames split across packets, missing `END`, `SAME`, `ERR`.
-- **Collector script**: runs for real under a local bash against a fake host (`tests/collector.rs`): every section parses, rates are right, OFF/NOW/TIER/SVC/PING/QUIT, garbage and injection attempts ignored, EOF ends it, missing `/proc` files give `ERR`. A unit test asserts the script ends with the `main` call. shellcheck still to be added (not installed here).
+- **Collector script**: runs for real under a local bash against a fake host (`tests/collector.rs`): every section parses, rates are right, OFF/NOW/TIER/SVC/PING/QUIT, garbage and injection attempts ignored, EOF ends it, missing `/proc` files give `ERR`. A unit test asserts the script ends with the `main` call. shellcheck runs in CI.
+- **CI** (`.github/workflows/ci.yml`): Linux (shellcheck, fmt, clippy, tests with real bash + /proc), Windows (tests under Git Bash), and **real-sshd**: OpenSSH + a password user in the sudo group on the runner, then `examples/real_host.rs` with `SW_REAL_STRICT=1` (probe, sudo, every section, logs, actions, PTY must all work).
+- **Release** (`.github/workflows/release.yml`): tag `v*` → Windows zip, Linux tar.gz + .deb (`cargo deb`), macOS tar.gz, SHA256SUMS, attached to a **draft** release.
 - **Command building**: every action template tested with hostile inputs (spaces, quotes, `;`, `$()`, newlines) — must be rejected or safely quoted.
 - **Demo mode** (`--demo`) replays recorded frames and log lines; use it for UI work and screenshots instead of a live server.
 - **Perf**: `securewire --bench-ui[=report.txt]` runs the demo host at 50 log lines/s for 20 s, writes frame-time percentiles and exits (window must be visible). `SW_FRAME_STATS=<file>` logs repaints per 10 s.
