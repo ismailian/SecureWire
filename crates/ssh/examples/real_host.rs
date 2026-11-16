@@ -352,9 +352,15 @@ fn main() {
     });
     run.host.send(Command::RunAction {
         id: 2,
-        action: Action::LargestDirs("/var".into()),
+        // /etc, not /var: on CI runners /var holds gigabytes of Docker images and `du` can take
+        // longer than the wait below.
+        action: Action::LargestDirs("/etc".into()),
     });
-    run.pump(Duration::from_secs(30), |_| false);
+    let mut done = 0;
+    run.pump(Duration::from_secs(60), |k| {
+        done += matches!(k, EventKind::ActionResult { .. }) as u32;
+        done == 2
+    });
     for (id, (ok, exit, out)) in &run.results {
         let head: String = out.lines().take(8).collect::<Vec<_>>().join("\n    ");
         println!("action {id}: ok={ok} exit={exit:?}\n    {head}");
