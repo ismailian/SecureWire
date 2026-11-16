@@ -16,6 +16,16 @@ fn process_name(tok: &str) -> String {
     tok.split('"').nth(1).unwrap_or("").to_owned()
 }
 
+fn process_pids(tok: &str) -> Vec<u32> {
+    let mut v: Vec<u32> = tok
+        .split("pid=")
+        .skip(1)
+        .filter_map(|s| s.split([',', ')']).next()?.parse().ok())
+        .collect();
+    v.dedup();
+    v
+}
+
 fn is_addr(tok: &str) -> bool {
     !tok.starts_with("users:")
         && tok.contains(':')
@@ -38,16 +48,15 @@ pub fn parse_listeners(payload: &str) -> Vec<Listener> {
             };
             let local = toks.iter().find(|t| is_addr(t))?;
             let (addr, port) = split_addr(local)?;
-            let process = toks
-                .iter()
-                .find(|t| t.starts_with("users:"))
-                .map(|t| process_name(t))
-                .unwrap_or_default();
+            let users = toks.iter().find(|t| t.starts_with("users:"));
+            let process = users.map(|t| process_name(t)).unwrap_or_default();
+            let pids = users.map(|t| process_pids(t)).unwrap_or_default();
             Some(Listener {
                 proto,
                 addr,
                 port,
                 process,
+                pids,
             })
         })
         .collect();
@@ -369,7 +378,7 @@ mod tests {
     #[test]
     fn listeners() {
         let v = parse_listeners(
-            "tcp   LISTEN 0      4096       0.0.0.0:22        0.0.0.0:*    users:((\"sshd\",pid=812,fd=3))
+            "tcp   LISTEN 0      4096       0.0.0.0:22        0.0.0.0:*    users:((\"sshd\",pid=812,fd=3),(\"systemd\",pid=1,fd=78))
 tcp   LISTEN 0      511           [::]:443          [::]:*
 tcp   LISTEN 0      80       127.0.0.1:3306      0.0.0.0:*
 udp   UNCONN 0      0    127.0.0.53%lo:53        0.0.0.0:*
@@ -382,8 +391,23 @@ tcp   LISTEN 0      511              *:6379             *:*",
                 proto: "tcp".into(),
                 addr: "0.0.0.0".into(),
                 port: 22,
-                process: "sshd".into()
+                process: "sshd".into(),
+                pids: vec![812, 1],
             }
+        );
+        assert_eq!(v[0].reach_addr(), "127.0.0.1");
+        let groups = crate::model::group_ports(&v);
+        // 22, 443, 6379 public (sorted), then 53 and 3306 local-only.
+        let order: Vec<(u16, bool)> = groups.iter().map(|g| (g.port, g.public)).collect();
+        assert_eq!(
+            order,
+            [
+                (22, true),
+                (443, true),
+                (6379, true),
+                (53, false),
+                (3306, false)
+            ]
         );
         let mysql = v.iter().find(|l| l.port == 3306).unwrap();
         assert!(!mysql.is_public());

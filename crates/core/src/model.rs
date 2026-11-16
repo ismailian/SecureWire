@@ -180,6 +180,8 @@ pub struct Listener {
     pub port: u16,
     /// Only known when the collector can see other users' processes (root).
     pub process: String,
+    /// Owning processes (`ss -p`), to match a service's MainPID.
+    pub pids: Vec<u32>,
 }
 
 impl Listener {
@@ -188,6 +190,60 @@ impl Listener {
         let a = self.addr.trim_matches(['[', ']']);
         !(a.starts_with("127.") || a == "::1" || a.starts_with("::ffff:127.") || a == "localhost")
     }
+
+    /// Address to reach this socket from the server itself (tunnel target):
+    /// wildcards become loopback, a specific address stays as it is.
+    pub fn reach_addr(&self) -> String {
+        match self.addr.trim_matches(['[', ']']) {
+            "0.0.0.0" | "*" | "" => "127.0.0.1".into(),
+            "::" => "::1".into(),
+            a => a.split('%').next().unwrap_or(a).to_owned(),
+        }
+    }
+}
+
+/// Listening sockets grouped by port, for chips (one per port, not per address).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortGroup {
+    pub port: u16,
+    /// Any of its sockets is bound to a non-loopback address.
+    pub public: bool,
+    /// e.g. "tcp", "tcp+udp".
+    pub protos: String,
+    /// Distinct process names, comma-separated.
+    pub processes: String,
+}
+
+/// Public ports first, then local-only, each by port number.
+pub fn group_ports(ls: &[Listener]) -> Vec<PortGroup> {
+    let mut out: Vec<PortGroup> = Vec::new();
+    for l in ls {
+        let g = match out.iter_mut().position(|g| g.port == l.port) {
+            Some(i) => &mut out[i],
+            None => {
+                out.push(PortGroup {
+                    port: l.port,
+                    ..Default::default()
+                });
+                out.last_mut().expect("just pushed")
+            }
+        };
+        g.public |= l.is_public();
+        if !g.protos.split('+').any(|p| p == l.proto) {
+            if !g.protos.is_empty() {
+                g.protos.push('+');
+            }
+            g.protos.push_str(&l.proto);
+        }
+        if !l.process.is_empty() && !g.processes.split(", ").any(|p| p == l.process) {
+            if !g.processes.is_empty() {
+                g.processes.push_str(", ");
+            }
+            g.processes.push_str(&l.process);
+        }
+    }
+    out.sort_by_key(|g| (!g.public, g.port));
+    out
 }
 
 /// An established TCP connection (`ss -Htn state established`).
@@ -216,7 +272,36 @@ pub struct Firewall {
     pub rules: Vec<FwRule>,
 }
 
+/// What the firewall does to new connections on a port (best effort: rules we can read).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortFirewall {
+    /// Inactive, or the default incoming policy accepts everything.
+    Open,
+    /// An allow rule mentions the port.
+    Allowed,
+    /// Default deny and no allow rule for it.
+    Blocked,
+}
+
 impl Firewall {
+    /// Active, but the default incoming policy accepts: rules aren't what protects ports.
+    pub fn accepts_all(&self) -> bool {
+        matches!(
+            self.incoming.to_ascii_lowercase().as_str(),
+            "accept" | "allow"
+        )
+    }
+
+    pub fn port_status(&self, port: u16) -> PortFirewall {
+        if !self.active || self.accepts_all() {
+            PortFirewall::Open
+        } else if self.allows_port(port) {
+            PortFirewall::Allowed
+        } else {
+            PortFirewall::Blocked
+        }
+    }
+
     /// Whether an ALLOW rule mentions this port (best effort; used for alerts only).
     pub fn allows_port(&self, port: u16) -> bool {
         let p = port.to_string();

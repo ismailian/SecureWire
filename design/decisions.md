@@ -109,6 +109,7 @@ Format: **context → decision → consequences**.
 - **Decision:** The reader collects packets arriving within 30 ms and emits them as one batch. Result: ~1.3 repaints/s, client CPU 0.78 % with live metrics (budget < 1 %).
 
 ### D-025 · Privileged reads accept sudo's log lines, but keep them few
+- *Superseded by D-029 (M5).*
 - **Context:** Every `sudo` call is logged on the server. Reading the firewall and fail2ban every 60 s therefore adds log lines.
 - **Decision:** One sudo call per section per tick (fail2ban jails batched into one `sudo sh -c`), only while the section is open; `ports` never uses sudo (process names only as root); `auth` uses sudo only when the journal isn't readable, every 5 minutes.
 - **Consequences:** ≈ 2 sudo log lines per minute with Firewall and Security open. Documented in the protocol (§11).
@@ -123,3 +124,25 @@ Format: **context → decision → consequences**.
 ### D-028 · Test SSH server owns its processes
 - **Context:** `tail -F` / `journalctl -f` stubs outlived the tests and kept cargo's output pipe open, hanging `cargo test`.
 - **Decision:** the in-process server records every process it starts and kills each tree when the connection ends and when the server is dropped (end of each test).
+
+### D-029 · One sudo per session for the collector
+- **Context:** On a real host (M5, Ubuntu 26.04 with sudo-rs) every privileged section called `sudo` each tick, and each call wrote three auth-log lines (the command, PAM session open and close). That flooded the very log users read for intrusions, and PAM made each call cost CPU.
+- **Decision:** With privilege the client launches the whole collector under one sudo: `exec sudo -S -p "" -- bash -s securewire-collector … root`, password line first on stdin, then the script. `sudo_run` in the script just runs the command (root) or refuses (none). The NOPASSWD path is `sudo -n`.
+- **Consequences:** One auth-log entry per collector start. The collector process runs as root. It is our own read-only script, fed only by the client, and sudo was already granted for these exact reads. A wrong or changed password means the collector exits at once ("Live metrics stopped") instead of reporting per-section errors. Relies on `sudo -S` reading the password unbuffered, which holds for sudo and sudo-rs and was verified on the real host.
+
+### D-030 · Re-ask fail2ban only when its database changed
+- **Context:** `fail2ban-client` is Python. One refresh (status plus one call per jail) measured ~400 ms CPU, the largest single cost in the collector.
+- **Decision:** `f2b` re-runs only when `/var/lib/fail2ban/fail2ban.sqlite3` is newer than the last read (`find -newermt`, one cheap fork), on `NOW` (e.g. after a ban action), or every 10 minutes. Otherwise it repeats the last frame (`SAME`).
+- **Consequences:** Bans show up within one slow tick. "Currently failed" counts can be up to 10 minutes old when fail2ban keeps them only in memory. The 24 h failed-login chart comes from the `auth` section anyway.
+
+### D-031 · Tunnels are direct-tcpip channels on the same connection, bound to 127.0.0.1
+- **Decision:** One-click tunnels listen on 127.0.0.1 only and carry each local connection as a `direct-tcpip` channel on the host's existing SSH connection. This is the same mechanism as ProxyJump. The target address comes from `ss` and must be an IP literal. Tunnels survive reconnects by using whichever session is current per connection.
+- **Consequences:** Still one TCP connection per host (non-negotiable 1). Nothing on the server changes. Other machines on the LAN can't use a tunnel. UDP can't be tunnelled.
+
+### D-032 · An exited shell closes its tab
+- **Context:** Typing `exit` left a dead tab that said "press Enter to start a new one" (reported by the user).
+- **Decision:** When the shell's channel ends, its tab closes (and the actor forgets the PTY, so a reconnect won't reopen it). With no tabs left, the terminal area shows "No terminal open" with a New terminal button. A lost *connection* is different: tabs stay and reopen on reconnect.
+
+### D-033 · Access logs are parsed on the net thread
+- **Decision:** For file sources whose name contains "access", the log channel also parses each line as an nginx/apache common or combined record (`core::logs::parse_access`) and sends `EventKind::Access` batches. The UI only aggregates them (per IP, per status class, last 2000 requests) for the Traffic tab.
+- **Consequences:** No parsing in `update()` (non-negotiable 4). An access log has to be added as a log source before the Traffic tab appears.

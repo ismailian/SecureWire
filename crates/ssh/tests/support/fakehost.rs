@@ -194,6 +194,11 @@ echo "   1123 www-data  1.2   38900 3562000 nginx: worker process""#,
         *) printf "Id=%s\nActiveState=active\nSubState=running\nMainPID=1123\nMemoryCurrent=39845888\nNRestarts=0\nResult=success\n\n" "$u" ;;
       esac
     done ;;
+  start|stop|restart|reload)
+    case $3 in
+      missing*) echo "Failed to $1 $3: Unit $3 not loaded." >&2; exit 5 ;;
+      *) echo "$1 $3 as ${SW_AS:-user}" ;;
+    esac ;;
   list-units)
     echo "nginx.service loaded active running A high performance web server"
     echo "redis-server.service loaded failed failed Advanced key-value store"
@@ -258,6 +263,7 @@ elif [ "$n" = 1 ]; then
   exit 1
 fi
 [ $# -gt 0 ] || exit 0
+export SW_AS=root
 exec "$@""#
             ),
         );

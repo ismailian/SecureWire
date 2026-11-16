@@ -50,6 +50,12 @@ pub fn default_key_path() -> PathBuf {
 }
 
 /// The user's OpenSSH known_hosts (read-only for SecureWire).
+/// `~/.ssh/config` (for "Import ~/.ssh/config").
+pub fn user_ssh_config() -> Option<PathBuf> {
+    let p = home().join(".ssh").join("config");
+    p.exists().then_some(p)
+}
+
 pub fn user_known_hosts() -> Option<PathBuf> {
     let p = home().join(".ssh").join("known_hosts");
     p.exists().then_some(p)

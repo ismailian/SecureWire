@@ -84,6 +84,8 @@ pub enum ConnectOutcome {
         auth: AuthSpec,
     },
     Delete(String),
+    /// Read ~/.ssh/config and add its hosts to the saved list.
+    Import,
 }
 
 impl Default for ConnectDialog {
@@ -265,12 +267,26 @@ impl ConnectDialog {
                         ui.label(w::faint("Uses the Windows OpenSSH agent or Pageant (SSH_AUTH_SOCK on Linux/macOS)."));
                     }
                 }
+                field(ui, "Jump host", |ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.form.jump)
+                            .hint_text("optional · saved host name or user@host:port")
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                });
                 if let Some(e) = &self.error {
                     ui.label(RichText::new(format!("{} {e}", ph::WARNING)).color(WARN));
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(w::faint("Saved to hosts.toml · passwords are never saved"));
+                    if ui
+                        .button(format!("{}  Import ~/.ssh/config", ph::DOWNLOAD_SIMPLE))
+                        .clicked()
+                    {
+                        outcome = ConnectOutcome::Import;
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                         let go = ui
@@ -1075,6 +1091,301 @@ impl LogSourcesDialog {
             },
         );
         if close {
+            self.open = false;
+        }
+        out
+    }
+}
+
+// ─────────────────────────────── Confirm action ───────────────────────────────
+
+/// ui-spec §4.6: the exact command, the host in the title, the verb on the button.
+pub struct ConfirmAction {
+    pub action: sw_core::actions::Action,
+    host: String,
+    command: String,
+    line: String,
+    as_root: bool,
+    opened: std::time::Instant,
+}
+
+pub enum ConfirmOutcome {
+    None,
+    Run,
+    Cancel,
+}
+
+impl ConfirmAction {
+    pub fn new(action: sw_core::actions::Action, host: &str, line: String, as_root: bool) -> Self {
+        Self {
+            command: action.command().unwrap_or_default(),
+            action,
+            host: host.to_owned(),
+            line,
+            as_root,
+            opened: std::time::Instant::now(),
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> ConfirmOutcome {
+        let mut out = ConfirmOutcome::None;
+        let verb = self.action.verb();
+        let destructive = self.action.destructive();
+        modal(
+            ctx,
+            "confirm-action",
+            &format!("{verb} — {}", self.host),
+            if destructive {
+                ph::WARNING
+            } else {
+                ph::TERMINAL
+            },
+            560.0,
+            |ui| {
+                ui.label(w::dim(if self.as_root {
+                    "Runs on the server as root (sudo):"
+                } else {
+                    "Runs on the server as your user:"
+                }));
+                egui::Frame::NONE
+                    .fill(BG0)
+                    .stroke(egui::Stroke::new(1.0, LINE2))
+                    .corner_radius(3)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(egui::Label::new(w::mono(&self.command, TX0)).wrap());
+                    });
+                ui.label(w::faint("Exact command line:"));
+                ui.add(egui::Label::new(w::mono(&self.line, TX2).size(11.0)).wrap());
+                if self.line.starts_with("sudo -S") {
+                    ui.label(w::faint(
+                        "The sudo password goes on the channel's stdin — never in the command.",
+                    ));
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(w::faint("Nothing else is sent."));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let fill = if destructive { ERR } else { ACC };
+                        // Ignore the Enter that may have opened this dialog (palette).
+                        let settled = self.opened.elapsed() > std::time::Duration::from_millis(250);
+                        let enter = settled && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui
+                            .add(egui::Button::new(RichText::new(&verb).color(BG0)).fill(fill))
+                            .clicked()
+                            || enter
+                        {
+                            out = ConfirmOutcome::Run;
+                        }
+                        if ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            out = ConfirmOutcome::Cancel;
+                        }
+                    });
+                });
+            },
+        );
+        out
+    }
+}
+
+/// Output of a finished action (read-only results, or a failure).
+pub struct ActionOutput {
+    pub title: String,
+    ok: bool,
+    exit: Option<u32>,
+    text: String,
+}
+
+impl ActionOutput {
+    pub fn new(title: String, ok: bool, exit: Option<u32>, output: &str) -> Self {
+        // Remote text: strip control characters line by line before drawing (CLAUDE.md §2.6).
+        let text = output
+            .lines()
+            .map(sw_core::logs::sanitize)
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            title,
+            ok,
+            exit,
+            text,
+        }
+    }
+
+    /// `false` once closed.
+    pub fn show(&mut self, ctx: &egui::Context) -> bool {
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new(format!("{}  {}", ph::TERMINAL_WINDOW, self.title))
+            .id(egui::Id::new("action-output"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(vec2(640.0, 360.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, -20.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let (t, c) = match (self.ok, self.exit) {
+                        (true, _) => ("done".to_owned(), OK),
+                        (false, Some(code)) => (format!("exit {code}"), ERR),
+                        (false, None) => ("not run".to_owned(), ERR),
+                    };
+                    ui.label(RichText::new(t).color(c));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Close").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            close = true;
+                        }
+                        if ui.button(format!("{}  Copy", ph::COPY)).clicked() {
+                            ui.ctx().copy_text(self.text.clone());
+                        }
+                    });
+                });
+                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                    let shown = if self.text.is_empty() {
+                        "(no output)"
+                    } else {
+                        self.text.as_str()
+                    };
+                    ui.add(egui::Label::new(w::mono(shown, TX1)).extend());
+                });
+            });
+        open && !close
+    }
+}
+
+// ─────────────────────────────── Listening sockets ───────────────────────────────
+
+/// "All sockets" table (from the Network section): who listens where, what the firewall
+/// says, and per-row actions — tunnel to this computer, who's connected.
+#[derive(Default)]
+pub struct PortsDialog {
+    pub open: bool,
+    filter: String,
+}
+
+impl PortsDialog {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        v: &crate::state::HostView,
+    ) -> Option<crate::state::Request> {
+        use crate::state::Request;
+        use sw_core::actions::Action;
+        let mut out = None;
+        let mut close = false;
+        let fw = v.firewall.as_ref().filter(|f| f.active);
+        let q = self.filter.to_ascii_lowercase();
+        let rows: Vec<&sw_core::model::Listener> = v
+            .listeners
+            .iter()
+            .filter(|l| {
+                q.is_empty()
+                    || l.port.to_string().contains(&q)
+                    || l.process.to_ascii_lowercase().contains(&q)
+                    || l.addr.contains(&q)
+                    || l.proto.contains(&q)
+            })
+            .collect();
+        modal(
+            ctx,
+            "ports",
+            &format!("Listening sockets — {}", v.name),
+            ph::PLUGS,
+            760.0,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.filter)
+                            .hint_text(format!(
+                                "{}  Filter by port, process or address",
+                                ph::MAGNIFYING_GLASS
+                            ))
+                            .desired_width(320.0),
+                    );
+                    ui.label(w::faint(format!("{} of {}", rows.len(), v.listeners.len())));
+                });
+                let cols: [(&str, f32); 6] = [
+                    ("PROTO", 52.0),
+                    ("ADDRESS", 170.0),
+                    ("PORT", 60.0),
+                    ("PROCESS", 150.0),
+                    ("EXPOSURE", 90.0),
+                    ("FIREWALL", 80.0),
+                ];
+                ui.horizontal(|ui| {
+                    for (h, wd) in cols {
+                        ui.add_sized(vec2(wd, 18.0), egui::Label::new(w::faint(h)));
+                    }
+                });
+                egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show_rows(
+                ui,
+                24.0,
+                rows.len(),
+                |ui, range| {
+                    for l in &rows[range] {
+                        ui.horizontal(|ui| {
+                            let cell = |ui: &mut Ui, wd: f32, t: RichText| {
+                                ui.add_sized(vec2(wd, 20.0), egui::Label::new(t).truncate());
+                            };
+                            cell(ui, cols[0].1, w::mono(&l.proto, TX2));
+                            cell(ui, cols[1].1, w::mono(&l.addr, TX1));
+                            cell(ui, cols[2].1, w::mono(l.port.to_string(), TX0));
+                            let pids = l.pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+                            let proc_text = if l.process.is_empty() { "—".to_owned() } else { l.process.clone() };
+                            ui.add_sized(vec2(cols[3].1, 20.0), egui::Label::new(w::mono(proc_text, TX1)).truncate())
+                                .on_hover_text(if pids.is_empty() { "Process names need sudo".to_owned() } else { format!("pid {pids}") });
+                            let public = l.is_public();
+                            cell(ui, cols[4].1, RichText::new(if public { "public" } else { "local only" }).color(if public { WARN } else { TX3 }));
+                            use sw_core::model::PortFirewall;
+                            let fw_text = match (public, fw.map(|f| f.port_status(l.port))) {
+                                (false, _) => ("—", TX3),
+                                (true, None) => ("no firewall", ERR),
+                                (true, Some(PortFirewall::Open)) => ("open", ERR),
+                                (true, Some(PortFirewall::Allowed)) => ("allowed", OK),
+                                (true, Some(PortFirewall::Blocked)) => ("blocked", TX2),
+                            };
+                            cell(ui, cols[5].1, RichText::new(fw_text.0).color(fw_text.1));
+                            if l.proto == "tcp"
+                                && ui
+                                    .small_button(format!("{} Tunnel", ph::ARROWS_LEFT_RIGHT))
+                                    .on_hover_text(format!(
+                                        "Forward 127.0.0.1 on this computer to {}:{} on the server, over this SSH connection",
+                                        l.reach_addr(),
+                                        l.port
+                                    ))
+                                    .clicked()
+                            {
+                                let label = if l.process.is_empty() { format!("{}/{}", l.proto, l.port) } else { l.process.clone() };
+                                out = Some(Request::Tunnel { host: l.reach_addr(), port: l.port, label });
+                            }
+                            if ui.small_button("Who").on_hover_text("Sockets on this port, with processes").clicked() {
+                                out = Some(Request::Run(Action::WhoOnPort(l.port)));
+                            }
+                        });
+                    }
+                },
+            );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(w::faint(
+                        "Tunnels listen on 127.0.0.1 only and ride this host's SSH connection.",
+                    ));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Close").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            },
+        );
+        if close || out.is_some() {
             self.open = false;
         }
         out

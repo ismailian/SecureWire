@@ -4,6 +4,7 @@
 
 mod app;
 mod dialogs;
+mod palette;
 mod panels;
 mod state;
 mod store;

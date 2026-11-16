@@ -351,6 +351,94 @@ mod tests {
     }
 }
 
+// ───────────────────────── IPs and web traffic ─────────────────────────
+
+/// IP addresses mentioned in a log line, in order, without duplicates.
+/// `1.2.3.4:5678`, `[2001:db8::1]:443`, `from 1.2.3.4.` all count; timestamps
+/// like `12:20:16` or versions like `1.2.3` don't (they don't parse as addresses).
+pub fn extract_ips(s: &str) -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
+    let mut out: Vec<IpAddr> = Vec::new();
+    let tokens =
+        s.split(|c: char| !(c.is_ascii_hexdigit() || c == '.' || c == ':' || c == '[' || c == ']'));
+    for t in tokens {
+        let t = t.trim_matches(|c| c == '.' || c == ':');
+        if t.len() < 3 {
+            continue;
+        }
+        let ip = t
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .ok()
+            .or_else(|| {
+                // address:port (v4) or [v6]:port
+                let (a, p) = t.rsplit_once(':')?;
+                p.parse::<u16>().ok()?;
+                a.trim_matches(['[', ']']).parse().ok()
+            });
+        if let Some(ip) = ip.filter(|ip| !ip.is_unspecified()) {
+            // Bare hex words ("cafe", "dead::") never appear as `IpAddr` without a ':' run of 2+.
+            if ip.is_ipv6() && t.matches(':').count() < 2 {
+                continue;
+            }
+            if !out.contains(&ip) {
+                out.push(ip);
+            }
+        }
+    }
+    out
+}
+
+/// One request from an nginx/apache access log (common or combined format).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccessHit {
+    pub ip: String,
+    pub method: String,
+    pub path: String,
+    pub status: u16,
+    pub bytes: u64,
+    pub referrer: String,
+    pub agent: String,
+}
+
+/// `access.log`, `other_vhosts_access.log`, `site_access_log`… — by file name.
+pub fn is_access_log(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|f| f.contains("access"))
+}
+
+/// `IP - user [time] "METHOD path PROTO" status bytes ["referrer" "agent"]`
+/// (also Apache's `vhost:port IP …` prefix from other_vhosts_access.log).
+pub fn parse_access(line: &str) -> Option<AccessHit> {
+    let (head, rest) = line.split_once(" [")?;
+    let mut hf = head.split_whitespace();
+    let mut ip = hf.next()?;
+    if ip.parse::<std::net::IpAddr>().is_err() {
+        // vhost:port first, then the client address.
+        ip = hf.next()?;
+        ip.parse::<std::net::IpAddr>().ok()?;
+    }
+    let (_, rest) = rest.split_once("] \"")?;
+    let (req, rest) = rest.split_once('"')?;
+    let mut rf = req.split_whitespace();
+    let method = rf.next().unwrap_or("-").to_owned();
+    let path = rf.next().unwrap_or("").to_owned();
+    let mut nums = rest.split_whitespace();
+    let status: u16 = nums.next()?.parse().ok()?;
+    let bytes = nums.next().and_then(|b| b.parse().ok()).unwrap_or(0);
+    let quoted: Vec<&str> = rest.split('"').skip(1).step_by(2).collect();
+    Some(AccessHit {
+        ip: ip.to_owned(),
+        method: sanitize(&method),
+        path: sanitize(&path),
+        status,
+        bytes,
+        referrer: quoted.first().map(|s| sanitize(s)).unwrap_or_default(),
+        agent: quoted.get(1).map(|s| sanitize(s)).unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod m4_tests {
     use super::*;
@@ -403,5 +491,72 @@ mod m4_tests {
             c.iter().find(|x| x.target == "/var/log/syslog").unwrap().id,
             "syslog"
         );
+    }
+}
+
+#[cfg(test)]
+mod ip_tests {
+    use super::*;
+
+    #[test]
+    fn ips_in_log_lines() {
+        let ip = |s: &str| {
+            extract_ips(s)
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ip(
+                "2026-11-16T12:25:41 sshd[1]: Failed password for root from 198.51.100.7 port 50412 ssh2"
+            ),
+            ["198.51.100.7"]
+        );
+        assert_eq!(
+            ip("fail2ban.actions: NOTICE [sshd] Ban 203.0.113.9."),
+            ["203.0.113.9"]
+        );
+        assert_eq!(
+            ip("upstream 127.0.0.1:9000 client: 192.0.2.4, server: x"),
+            ["127.0.0.1", "192.0.2.4"]
+        );
+        assert_eq!(
+            ip("from [2001:db8::1]:443 and 2001:db8::1 again"),
+            ["2001:db8::1"]
+        );
+        assert!(ip("at 12:20:16 version 1.2.3 build cafe dead:beef").is_empty());
+        assert!(ip("listening on 0.0.0.0:22").is_empty());
+    }
+
+    #[test]
+    fn access_lines() {
+        let h = parse_access(
+            r#"203.0.113.9 - - [16/Nov/2026:12:01:02 +0000] "GET /wp-login.php?x=1 HTTP/1.1" 404 153 "-" "Mozilla/5.0 (bot)""#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                h.ip.as_str(),
+                h.method.as_str(),
+                h.path.as_str(),
+                h.status,
+                h.bytes
+            ),
+            ("203.0.113.9", "GET", "/wp-login.php?x=1", 404, 153)
+        );
+        assert_eq!(h.agent, "Mozilla/5.0 (bot)");
+        // Apache other_vhosts_access.log: vhost:port first; common format without quotes after.
+        let h = parse_access(r#"example.com:443 2001:db8::5 - bob [16/Nov/2026:12:01:02 +0000] "POST /api HTTP/2.0" 201 -"#).unwrap();
+        assert_eq!((h.ip.as_str(), h.status, h.bytes), ("2001:db8::5", 201, 0));
+        // Hostile request line: control characters never reach the UI.
+        let h = parse_access("192.0.2.1 - - [x] \"GET /\x1b[31mred HTTP/1.1\" 400 0 \"-\" \"-\"")
+            .unwrap();
+        assert!(!h.path.contains('\x1b'));
+        assert!(parse_access("not an access line").is_none());
+        assert!(
+            is_access_log("/var/log/nginx/access.log")
+                && is_access_log("/var/log/apache2/other_vhosts_access.log")
+        );
+        assert!(!is_access_log("/var/log/nginx/error.log"));
     }
 }

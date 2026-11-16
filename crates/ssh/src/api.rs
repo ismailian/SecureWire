@@ -79,8 +79,19 @@ pub struct ConnectSpec {
     pub user: String,
     pub auth: AuthSpec,
     pub known_hosts: KnownHosts,
+    /// Connect through this host (ProxyJump, one hop) with a direct-tcpip channel.
+    pub jump: Option<JumpSpec>,
     /// TCP connect and SSH-handshake idle limit (host-key prompt time excluded).
     pub connect_timeout: std::time::Duration,
+}
+
+/// A jump host: its own address, user and credentials; host key checked like the target's.
+#[derive(Debug, Clone)]
+pub struct JumpSpec {
+    pub address: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthSpec,
 }
 
 impl ConnectSpec {
@@ -185,6 +196,20 @@ pub enum Command {
     },
     /// Discover log candidates → [`EventKind::LogCandidates`].
     DiscoverLogs,
+    /// Run a server action (protocol §7) on its own exec channel → [`EventKind::ActionResult`].
+    RunAction {
+        id: u64,
+        action: sw_core::actions::Action,
+    },
+    /// Forward 127.0.0.1:<local> to `host:port` as seen from the server (protocol §13).
+    /// `local_port` 0 = pick one (same number if free). → [`EventKind::Tunnel`].
+    OpenTunnel {
+        id: u64,
+        host: String,
+        port: u16,
+        local_port: u16,
+    },
+    CloseTunnel(u64),
     /// Answer to [`EventKind::SudoPrompt`]: `None` = skip (no privileged features).
     SudoPassword(Option<SecretString>),
     /// Ask for the sudo password again (status bar → "no sudo").
@@ -195,11 +220,20 @@ pub enum Command {
     Shutdown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunnelState {
+    Listening { local_port: u16 },
+    Failed(String),
+    Closed,
+}
+
 #[derive(Debug, Clone)]
 pub enum EventKind {
     State(ConnState),
     Connected(ConnInfo),
     HostKeyPrompt {
+        /// Which host (the jump host or the target).
+        host: String,
         algorithm: String,
         fingerprint: String,
         status: HostKeyStatus,
@@ -228,6 +262,19 @@ pub enum EventKind {
     Scheduled(sw_core::model::Scheduled),
     Units(Vec<sw_core::model::UnitInfo>),
     LogCandidates(Vec<sw_core::logs::LogCandidate>),
+    /// Requests parsed from access-log sources: (time ms, source index, request).
+    Access(Vec<(i64, u16, sw_core::logs::AccessHit)>),
+    Tunnel {
+        id: u64,
+        state: TunnelState,
+    },
+    /// Outcome of [`Command::RunAction`]: combined stdout+stderr (capped).
+    ActionResult {
+        id: u64,
+        ok: bool,
+        exit: Option<u32>,
+        output: String,
+    },
     /// Effective service-status mode (Live degrades to polling without journal access).
     ServiceMode {
         live_watching: bool,

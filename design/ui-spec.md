@@ -73,7 +73,7 @@ Header: title, age of last fast sample, pause sampling, collapse all.
 | CPU | `load 0.42 0.51 0.48` | Big % (user/sys/iowait/steal breakdown), 2-min sparkline (60 × 2 s), per-core mini bars (grid of 4 columns; > 16 cores → show top 8 busiest + "all cores" toggle). |
 | Memory | `5.1 / 7.8 GiB` | RAM bar segmented used / cache, swap bar, legend with values. |
 | Disk | `1 > 80%` badge or `ok` | One row per real mount: path, used/total, bar (amber > 80 %, red > 90 %), I/O read/write rates. Click mount → palette action "Largest directories under …". |
-| Network | primary interface name | ↓/↑ rates, dual sparkline (rx filled info-blue, tx teal line), established count, listening ports as chips (public = normal, loopback = dim, unexpected public bind = amber). |
+| Network | primary interface name | ↓/↑ rates, dual sparkline (rx filled info-blue, tx teal line), listening ports as chips — **one chip per port** (`22 sshd`), public first, local-only dim, a public port a deny-by-default firewall doesn't allow in amber; at most 12 chips, then `+n`. "All n sockets…" (and any chip) opens the **Listening sockets** dialog. Below: **TUNNELS** — one row per active tunnel: `127.0.0.1:13306 → 3306 mysqld`, copy, open in browser (web ports), close. |
 | Sessions | `2 users` | `who` rows: user, tty, from, idle; your own session tagged `YOU`. Footer note linking failed-login count to Security. |
 
 ### 3.3 Center — TERMINAL
@@ -81,15 +81,17 @@ Header: title, age of last fast sample, pause sampling, collapse all.
 - Right of tabs (dim): `PTY cols×rows`, `channel #n`, `TERM`.
 - Rendering: monospace grid from `alacritty_terminal`; 256-color + truecolor; bold/italic/underline/inverse; mouse reporting; bracketed paste; selection with copy on `Ctrl Shift C`, paste `Ctrl Shift V` (and right-click menu). Scrollback 10 000 lines (configurable).
 - Focus: terminal has focus on launch and after closing any dialog. Focused cursor = teal block; unfocused = hollow gray.
+- Shell exit (`exit`, Ctrl D): the tab closes; with no tabs left the area shows "No terminal open · Ctrl Shift T opens one · [New terminal]" (D-032). A lost connection keeps the tabs.
 - Disconnect: dim the grid, show an inline banner "Connection lost — reconnecting in 4 s · [Reconnect now]". Scrollback is preserved; a new shell starts after reconnect (we do not pretend the old shell survived).
 
-### 3.4 Bottom dock — LOGS · ALERTS · PROCESSES · CONNECTIONS
+### 3.4 Bottom dock — LOGS · ALERTS · PROCESSES · CONNECTIONS · TRAFFIC
 Tab headers are uppercase labels with count badges (Logs: error count since last viewed; Alerts: active alerts).
 
 **Logs**
 - Toolbar: source chips (`all` + one per enabled source, colored swatch; red dot if the source has unseen errors) · sliders button → **Log sources** dialog · level toggles `ERR WARN INFO DEBUG` · regex filter (invalid regex → plain substring, input border turns amber) · follow toggle · clear view.
 - Rows: `HH:MM:SS.mmm` · source (colored) · level · message (single line, ellipsized; full text on hover; click row to expand multi-line). Error rows get a faint red tint. New rows highlight for 1 s.
 - Scrolling up turns follow off; pressing End or the follow button turns it on.
+- Click a row: copy the line, and one submenu per IP address the line mentions (see **IP menu** below).
 - Must be virtualized (`ScrollArea::show_rows`) — only visible rows are laid out.
 
 **Alerts** — derived client-side, never from a server agent:
@@ -104,17 +106,21 @@ Tab headers are uppercase labels with count badges (Logs: error count since last
 | fail2ban ban rate > N/h | info |
 Each alert has contextual buttons (Logs, Restart, Largest dirs, Show rule). Alerts clear automatically when the condition clears; a cleared alert stays greyed in the list for 10 min.
 
-**Processes** — top 25 by CPU (sortable: CPU, MEM, PID). Row context menu: copy PID, `kill -TERM` (confirm), open `top -p` in a new terminal tab.
+**Processes** — top 25 by CPU. Fixed columns; COMMAND takes the remaining width and truncates (full text on hover), so long command lines never widen the dock. Click the PID: copy PID, Terminate (`kill -TERM`, confirm), Kill (`kill -KILL`, confirm), `top -p` in a new terminal tab.
 
-**Connections** — established TCP (proto, local, peer, state, process). Fetched on tab open + slow tier.
+**Connections** — established TCP (proto, local, peer, state, process). Fetched on tab open + slow tier. Click the peer: Ban it (fail2ban, confirm), who's on the local port, copy.
+
+**Traffic** — shown when an access-log source exists (nginx/apache `*access*` files). Summary: request count and 2xx/3xx/4xx/5xx chips. Left: **top clients** (IP, requests, 4xx/5xx count, last path), banned IPs dimmed. Right: **recent requests**, newest first (time, IP, status colored by class, method + path; referrer and user agent on hover), filterable to one client. Records are parsed on the net thread (D-033).
+
+**IP menu** (Traffic, log lines): only this client's requests · log lines mentioning it (sets the log filter) · Ban / Unban in the fail2ban jail (`sshd` preferred; confirm) · copy.
 
 ### 3.5 Right panel — WATCH
 Header: refresh all now, collapse all.
 
 | Section | Header summary | Body |
 |---|---|---|
-| Services | Live switch + `+` | One row per watched unit: status dot, name (mono), sub-line `running · 41d` / `failed · exit 1 · 3m ago`, right column memory + pid/tasks. Failed rows have a red-tinted background and sort first. Hover reveals actions: restart/reload, logs (filters Logs tab to that unit), status in terminal (types `systemctl status <unit> --no-pager` into the active terminal **without pressing Enter**), stop. Footer: current mode ("Live · state changes pushed by systemd", or "Checked 12s ago · refresh"). |
-| Firewall | `UFW ACTIVE` / `NFT` / `INACTIVE` / `NO ACCESS` badge | Default policies, rule table (To, Action, From). Footer shows the command used and its interval. Read-only in v1. |
+| Services | Live switch + `+` | One row per watched unit: click (or right-click) a row for its actions — status dot, name (mono), sub-line `running · 41d` / `failed · exit 1 · 3m ago`, right column memory + pid/tasks. Failed rows have a red-tinted background and sort first. restart / reload / stop or start (confirm), follow its journal in a new tab, **tunnel each TCP port it listens on** (matched by MainPID, or by process name without sudo), status in terminal (types `systemctl status <unit> --no-pager` into the active terminal **without pressing Enter**), stop. Footer: current mode ("Live · state changes pushed by systemd", or "Checked 12s ago · refresh"). |
+| Firewall | `UFW ACTIVE` / `NFT` / `INACTIVE` / `NO ACCESS` badge; amber `IPTABLES · ACCEPTS ALL` when active with an accepting default policy (raises an alert too) | Default policies, rule table (To, Action, From). Footer shows the command used and its interval. Read-only in v1. |
 | Security | `17 banned` | fail2ban jails with ban counts and rate badges; 24 h failed-login sparkline (48 × 30 min); top offending IPs with `BANNED` badge or a Ban button (confirm). |
 | Scheduled | `4 cron · 9 timers` | systemd timers (next/last run) + user crontab. Collapsed by default; collected only when expanded. |
 
@@ -131,6 +137,8 @@ All dialogs: title bar with icon + title + host name, × close, body, footer wit
 4. **Host key** (blocking, first connect or mismatch) — fingerprint `SHA256:…`, key type, "Trust and remember" / "Connect once" / "Cancel". On mismatch: red, no trust option unless the user types the host name to confirm.
 5. **Sudo password** (after login, only when the user isn't root and `sudo -n` fails) — "Some panels (firewall, fail2ban, root-only logs) and service actions need sudo on *host*." Masked field, Enter = verify, "Skip" = continue without. Wrong password: inline error, attempts left. Footer note: "Kept in memory for this session only — never saved." Re-open later by clicking the sudo item in the status bar.
 6. **Confirm action** — exact command in a mono block, target host name in the title, primary button labelled with the verb ("Restart nginx"), destructive ones in error color.
+   Read-only actions (largest directories, who's on port) skip the confirmation; their output opens in an **output window** (exit status, copy, close). A destructive action with no output just shows a toast.
+8. **Listening sockets** — filterable table: proto, address, port, process (pid on hover), exposure (`public` / `local only`), firewall (`open` / `allowed` / `blocked` / `no firewall`), and per row **Tunnel** (TCP only) and **Who**. Footer: "Tunnels listen on 127.0.0.1 only and ride this host's SSH connection."
 7. **Settings** — tabs: General (theme, UI scale, fonts), Collection (tier intervals, focus throttling on/off), Alerts (thresholds), Terminal (scrollback, font size, cursor style, copy-on-select), Keys.
 
 ## 5. States

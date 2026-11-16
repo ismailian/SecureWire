@@ -18,14 +18,23 @@ pub const PROBE_COMMAND: &str = "exec sh -s";
 /// credentials so a wrong password can't pass by accident.
 pub const SUDO_VERIFY_COMMAND: &str = "sudo -S -k -p \"\" true";
 
-/// The exec command for the collector channel. No secret and no script text in argv;
-/// with `Priv::Password` the password is the first stdin line after the script.
+/// The exec command for the collector channel. No secret and no script text in argv.
 pub fn launch_command(t: Throttle, p: Priv) -> String {
-    let (fast, medium, slow) = t.tiers();
-    format!(
-        "exec bash -s securewire-collector {fast} {medium} {slow} {}",
-        p.arg()
-    )
+    launch_with_tiers(t.tiers(), p)
+}
+
+/// With privilege the whole collector runs under ONE sudo for the session (D-029): one
+/// auth-log entry instead of one per privileged section per tick, and no PAM cost per
+/// tick. With `Priv::Password` the password is the first stdin line, read by `sudo -S`
+/// (unbuffered in sudo and sudo-rs); the script follows on the same stdin, for bash.
+pub fn launch_with_tiers((fast, medium, slow): (u64, u64, u64), p: Priv) -> String {
+    let run = format!("bash -s securewire-collector {fast} {medium} {slow}");
+    match p {
+        Priv::None => format!("exec {run} none"),
+        Priv::Root => format!("exec {run} root"),
+        Priv::NoPasswd => format!("exec sudo -n -- {run} root"),
+        Priv::Password => format!("exec sudo -S -p \"\" -- {run} root"),
+    }
 }
 
 /// How the collector may run root-only commands (protocol §9).
@@ -146,7 +155,11 @@ mod tests {
     fn lines() {
         assert_eq!(
             launch_command(Throttle::Normal, Priv::Password),
-            "exec bash -s securewire-collector 2 10 60 password"
+            r#"exec sudo -S -p "" -- bash -s securewire-collector 2 10 60 root"#
+        );
+        assert_eq!(
+            launch_command(Throttle::Normal, Priv::None),
+            "exec bash -s securewire-collector 2 10 60 none"
         );
         assert_eq!(on_off(Section::Df, false), "OFF df");
         assert_eq!(
@@ -189,6 +202,22 @@ pub fn sudo_prefix(p: Priv) -> &'static str {
         Priv::NoPasswd => "sudo -n -- ",
         Priv::Password => "sudo -S -p \"\" -- ",
     }
+}
+
+/// The exact command line a server action runs as (protocol §7), shown verbatim in the
+/// confirm dialog. `sh -c` makes the `2>&1` and any pipes apply to the whole command under
+/// sudo; the sudo password (Password mode) goes on the channel's stdin, never in this line.
+pub fn action_line(
+    action: &sw_core::actions::Action,
+    sudo: crate::api::SudoMode,
+) -> Result<String, String> {
+    let cmd = action.command()?;
+    let p = Priv::from_sudo(sudo);
+    if p == Priv::None && !action.works_unprivileged() {
+        return Err("This action needs sudo — click \"no sudo\" in the status bar".into());
+    }
+    let quoted = sw_core::shell::shell_quote(&format!("{cmd} 2>&1"));
+    Ok(format!("{}sh -c {quoted}", sudo_prefix(p)))
 }
 
 /// `journalctl -f -o json` for the given units. `resume_cursor` replaces the
@@ -250,5 +279,38 @@ mod m4_tests {
         assert!(tail_command(&["$(x)".into()], 1, "").is_none());
         assert!(DISCOVER.trim_end().ends_with("discover \"$@\""));
         assert!(!DISCOVER.contains('\r'));
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::action_line;
+    use crate::api::SudoMode;
+    use sw_core::actions::Action;
+
+    #[test]
+    fn action_lines_per_privilege() {
+        let a = Action::ServiceRestart("nginx.service".into());
+        assert_eq!(
+            action_line(&a, SudoMode::Root).unwrap(),
+            r#"sh -c 'systemctl restart -- '"'"'nginx.service'"'"' 2>&1'"#
+        );
+        assert!(
+            action_line(&a, SudoMode::Password)
+                .unwrap()
+                .starts_with(r#"sudo -S -p "" -- sh -c "#)
+        );
+        assert!(
+            action_line(&a, SudoMode::NoPasswd)
+                .unwrap()
+                .starts_with("sudo -n -- sh -c ")
+        );
+        assert!(action_line(&a, SudoMode::None).is_err());
+        // Read-only actions still run, unprivileged.
+        assert!(
+            action_line(&Action::WhoOnPort(22), SudoMode::None)
+                .unwrap()
+                .starts_with("sh -c ")
+        );
     }
 }

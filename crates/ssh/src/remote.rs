@@ -139,13 +139,14 @@ pub(crate) async fn start_collector<H: client::Handler>(
     ch.exec(false, collector::launch_command(throttle, privilege))
         .await
         .map_err(|e| e.to_string())?;
-    ch.data(collector::SCRIPT.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    // sudo -S reads the password line first; bash then reads the script (D-029).
     if privilege == collector::Priv::Password {
         let pw = password.ok_or("no sudo password held")?;
         send_secret_line(&ch, &pw).await?;
     }
+    ch.data(collector::SCRIPT.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     let (mut read, write) = ch.split();
     tokio::spawn(async move {
         let mut dec = FrameDecoder::new();
@@ -336,6 +337,8 @@ pub(crate) async fn start_log_channel<H: client::Handler>(
         while open {
             let mut msg = read.wait().await;
             let mut lines: Vec<LogLine> = Vec::new();
+            // Parsed requests from access logs, for the Traffic tab (parsed here, not in the UI).
+            let mut hits: Vec<(i64, u16, sw_core::logs::AccessHit)> = Vec::new();
             let mut cursor = None;
             loop {
                 match msg {
@@ -382,7 +385,12 @@ pub(crate) async fn start_log_channel<H: client::Handler>(
                                     else {
                                         continue;
                                     };
-                                    let (_, source, preset) = &files[i];
+                                    let (path, source, preset) = &files[i];
+                                    if sw_core::logs::is_access_log(path)
+                                        && let Some(h) = sw_core::logs::parse_access(text)
+                                    {
+                                        hits.push((now_ms, *source, h));
+                                    }
                                     lines.push(LogLine {
                                         ts_ms: now_ms,
                                         source: *source,
@@ -408,7 +416,11 @@ pub(crate) async fn start_log_channel<H: client::Handler>(
             }
             if !lines.is_empty() {
                 any = true;
-                emit(vec![EventKind::Logs(lines)]);
+                let mut ev = vec![EventKind::Logs(lines)];
+                if !hits.is_empty() {
+                    ev.push(EventKind::Access(hits));
+                }
+                emit(ev);
             }
         }
         let reason = (!any && !stderr.trim().is_empty())

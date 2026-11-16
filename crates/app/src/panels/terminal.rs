@@ -18,8 +18,6 @@ pub struct TermTab {
     pub term: Terminal,
     pub view: TerminalView,
     pub title: Arc<Mutex<Option<String>>>,
-    /// `Some(exit)` once the remote shell ended.
-    pub exited: Option<Option<u32>>,
 }
 
 #[derive(Default)]
@@ -29,7 +27,6 @@ pub struct TermUiOut {
     pub select: Option<usize>,
     pub input: Option<(PtyId, Vec<u8>)>,
     pub resize: Option<(PtyId, Size)>,
-    pub reopen: Option<PtyId>,
     pub reconnect: bool,
     pub focused: bool,
 }
@@ -193,6 +190,7 @@ pub fn show(
         ui.add_space(40.0);
         ui.vertical_centered(|ui| {
             ui.label(w::dim("No terminal open"));
+            ui.label(w::faint("Ctrl Shift T opens one"));
             if ui
                 .button(format!("{} New terminal", ph::TERMINAL_WINDOW))
                 .clicked()
@@ -207,12 +205,7 @@ pub fn show(
     if let Some(s) = v.resized {
         out.resize = Some((tab.id, s));
     }
-    if tab.exited.is_some() {
-        // Shell ended: Enter re-opens it, everything else is ignored.
-        if v.input.contains(&b'\r') {
-            out.reopen = Some(tab.id);
-        }
-    } else if !v.input.is_empty() {
+    if !v.input.is_empty() {
         out.input = Some((tab.id, v.input));
     }
     out

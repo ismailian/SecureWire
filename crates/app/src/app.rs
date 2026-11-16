@@ -10,21 +10,25 @@ use egui::{CentralPanel, Frame, Key, KeyboardShortcut, Margin, Modifiers, Panel,
 use egui_phosphor::regular as ph;
 use parking_lot::Mutex;
 use sw_core::Section;
+use sw_core::actions::Action;
 use sw_core::alerts::Severity;
 use sw_core::config::{HostConfig, HostsFile, ServiceMode};
 use sw_core::logs::sanitize;
 use sw_ssh::api::{
-    AuthSpec, Command, ConnState, ConnectSpec, EventKind, HostId, KnownHosts, PtyId, Throttle,
+    AuthSpec, Command, ConnState, ConnectSpec, EventKind, HostId, JumpSpec, KnownHosts, PtyId,
+    SudoMode, Throttle,
 };
 use sw_ssh::{Event, HostHandle, Net, Waker, spawn_demo_host_rate};
 use sw_term::{Size, TermEvent, Terminal, TerminalView};
 
 use crate::dialogs::{
-    AuthOutcome, AuthPrompt, ConnectDialog, ConnectOutcome, HostKeyPrompt, SudoOutcome, SudoPrompt,
+    ActionOutput, AuthOutcome, AuthPrompt, ConfirmAction, ConfirmOutcome, ConnectDialog,
+    ConnectOutcome, HostKeyPrompt, SudoOutcome, SudoPrompt,
 };
+use crate::palette::{Palette, PaletteCtx, Pick};
 use crate::panels::terminal::{Banner, TermTab};
 use crate::panels::{dock, status, system, terminal, topbar, watch};
-use crate::state::{DockTab, HostUi, HostView};
+use crate::state::{DockTab, HostUi, HostView, Request};
 use crate::store::{self, Store};
 use crate::theme::{self, tok::*};
 use crate::widgets as w;
@@ -44,6 +48,11 @@ struct HostEntry {
     log_dialog: crate::dialogs::LogSourcesDialog,
     auth_prompt: Option<AuthPrompt>,
     last_error: Option<String>,
+    confirm: Option<ConfirmAction>,
+    output: Option<ActionOutput>,
+    ports: crate::dialogs::PortsDialog,
+    /// Actions sent and not answered yet, by id.
+    pending: HashMap<u64, Action>,
 }
 
 impl HostEntry {
@@ -76,7 +85,6 @@ impl HostEntry {
             term,
             view: TerminalView::new((self.handle.id, id), theme::mono(13.0)),
             title,
-            exited: None,
         });
         self.active_tab = self.tabs.len() - 1;
     }
@@ -105,6 +113,8 @@ pub struct SecureWireApp {
     saved: HostsFile,
     connect: ConnectDialog,
     palette: sw_term::Palette,
+    cmd_palette: Palette,
+    next_action: u64,
     term_focused: bool,
     /// `SW_FRAME_STATS=<file>`: append frames-per-10s lines (perf diagnostics).
     frame_stats: Option<(std::path::PathBuf, Instant, u32)>,
@@ -149,6 +159,8 @@ impl SecureWireApp {
             saved,
             connect: ConnectDialog::default(),
             palette: theme::terminal_palette(),
+            cmd_palette: Palette::default(),
+            next_action: 1,
             term_focused: false,
             frame_stats: std::env::var_os("SW_FRAME_STATS").map(|p| (p.into(), Instant::now(), 0)),
             bench: bench.map(|out| Bench {
@@ -203,6 +215,10 @@ impl SecureWireApp {
             log_dialog: Default::default(),
             auth_prompt: None,
             last_error: None,
+            confirm: None,
+            output: None,
+            ports: Default::default(),
+            pending: HashMap::new(),
         });
         self.active = self.hosts.len() - 1;
     }
@@ -226,6 +242,13 @@ impl SecureWireApp {
             self.active = i;
             return;
         }
+        let jump = match self.resolve_jump(&config, &auth) {
+            Ok(j) => j,
+            Err(e) => {
+                self.toast(e);
+                return;
+            }
+        };
         let spec = ConnectSpec {
             name: config.name.clone(),
             address: config.address.clone(),
@@ -237,6 +260,7 @@ impl SecureWireApp {
                 app_file: self.store.known_hosts_path(),
             },
             connect_timeout: ConnectSpec::DEFAULT_TIMEOUT,
+            jump,
         };
         let id = self.alloc_id();
         let Some(net) = &self.net else { return };
@@ -337,14 +361,11 @@ impl SecureWireApp {
             };
             match ev.kind {
                 EventKind::HostKeyPrompt {
+                    host,
                     algorithm,
                     fingerprint,
                     status,
                 } => {
-                    let host = h
-                        .config
-                        .as_ref()
-                        .map_or(h.view.name.clone(), |c| c.address.clone());
                     h.key_prompt = Some(HostKeyPrompt::new(host, algorithm, fingerprint, status));
                 }
                 EventKind::SudoPrompt {
@@ -362,11 +383,40 @@ impl SecureWireApp {
                     h.auth_prompt = Some(AuthPrompt::new(h.view.name.clone(), msg, method, key));
                 }
                 EventKind::Error(msg) => h.last_error = Some(msg),
-                EventKind::PtyClosed { pty, exit } => {
-                    if let Some(t) = h.tabs.iter_mut().find(|t| t.id == pty) {
-                        t.exited = Some(exit);
-                        let code = exit.map_or("?".to_owned(), |c| c.to_string());
-                        t.term.advance(format!("\r\n\x1b[2m[shell exited ({code}) — press Enter to start a new one]\x1b[0m\r\n").as_bytes());
+                EventKind::ActionResult {
+                    id,
+                    ok,
+                    exit,
+                    output,
+                } => {
+                    let Some(action) = h.pending.remove(&id) else {
+                        continue;
+                    };
+                    let verb = action.verb();
+                    if ok && action.destructive() && output.trim().is_empty() {
+                        self.toast = Some((format!("{} {verb}: done", ph::CHECK), Instant::now()));
+                    } else {
+                        h.output = Some(ActionOutput::new(
+                            format!("{verb} — {}", h.view.name),
+                            ok,
+                            exit,
+                            &output,
+                        ));
+                    }
+                }
+                // The shell ended (`exit`, Ctrl D): its tab closes; with none left the terminal
+                // area shows the empty state with "New terminal".
+                EventKind::PtyClosed { pty, .. } => {
+                    if let Some(i) = h.tabs.iter().position(|t| t.id == pty) {
+                        h.tabs.remove(i);
+                        // Forget it in the actor too, or a reconnect would reopen it.
+                        h.handle.send(Command::ClosePty(pty));
+                        if h.active_tab > i || h.active_tab >= h.tabs.len() {
+                            h.active_tab = h.active_tab.saturating_sub(1);
+                        }
+                        if let Some(t) = h.tabs.get_mut(h.active_tab) {
+                            t.view.request_focus();
+                        }
                     }
                 }
                 kind => {
@@ -408,7 +458,23 @@ impl SecureWireApp {
                 self.layout.bottom = !self.layout.bottom;
             }
             if i.consume_shortcut(&sc(cs, Key::P)) {
-                self.toast = Some(("Command palette arrives in M5".into(), Instant::now()));
+                self.cmd_palette.toggle();
+            }
+            const DIGITS: [Key; 9] = [
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+                Key::Num9,
+            ];
+            for (n, k) in DIGITS.iter().enumerate() {
+                if i.consume_shortcut(&sc(Modifiers::COMMAND, *k)) && n < self.hosts.len() {
+                    self.active = n;
+                }
             }
             new_tab = i.consume_shortcut(&sc(cs, Key::T));
             close_tab = i.consume_shortcut(&sc(cs, Key::W));
@@ -526,11 +592,36 @@ impl SecureWireApp {
                     self.toast(format!("Could not save hosts.toml: {e}"));
                 }
             }
+            ConnectOutcome::Import => self.import_ssh_config(),
             ConnectOutcome::None => {}
         }
         let Some(h) = self.hosts.get_mut(self.active) else {
             return;
         };
+        if h.ports.open {
+            if let Some(r) = h.ports.show(ctx, &h.view) {
+                self.request(r);
+            }
+            return;
+        }
+        if let Some(o) = &mut h.output
+            && !o.show(ctx)
+        {
+            h.output = None;
+        }
+        if let Some(c) = &mut h.confirm {
+            match c.show(ctx) {
+                ConfirmOutcome::Run => {
+                    let a = c.action.clone();
+                    h.confirm = None;
+                    let idx = self.active;
+                    self.send_action(idx, a);
+                }
+                ConfirmOutcome::Cancel => h.confirm = None,
+                ConfirmOutcome::None => {}
+            }
+            return;
+        }
         if h.log_dialog.open {
             let (cands, name) = (h.view.log_candidates.clone(), h.view.name.clone());
             if let crate::dialogs::LogsOutcome::Apply {
@@ -591,6 +682,270 @@ impl SecureWireApp {
         }
         if close_host {
             self.close_host(self.active);
+        }
+    }
+
+    /// ProxyJump: a saved host's name (its own auth) or `[user@]host[:port]` (the target's
+    /// key / agent). Password jumps aren't supported: the password would need a second prompt.
+    fn resolve_jump(&self, c: &HostConfig, auth: &AuthSpec) -> Result<Option<JumpSpec>, String> {
+        let j = c.jump.trim();
+        if j.is_empty() {
+            return Ok(None);
+        }
+        if let Some(s) = self.saved.hosts.iter().find(|h| h.name == j) {
+            let auth = match s.auth {
+                sw_core::config::AuthMethod::Agent => AuthSpec::Agent,
+                sw_core::config::AuthMethod::Key => AuthSpec::KeyFile {
+                    path: if s.key_path.is_empty() {
+                        store::default_key_path()
+                    } else {
+                        s.key_path.clone().into()
+                    },
+                    passphrase: None,
+                },
+                sw_core::config::AuthMethod::Password => {
+                    return Err(format!(
+                        "Jump host {j} uses password auth — use a key or ssh-agent for jump hosts"
+                    ));
+                }
+            };
+            return Ok(Some(JumpSpec {
+                address: s.address.clone(),
+                port: s.port,
+                user: s.user.clone(),
+                auth,
+            }));
+        }
+        let (user, address, port) = sw_core::config::parse_jump(j).ok_or_else(|| {
+            format!("Jump host {j:?}: expected a saved host name or user@host:port")
+        })?;
+        let auth = match auth {
+            AuthSpec::Password(_) => AuthSpec::Agent,
+            other => other.clone(),
+        };
+        Ok(Some(JumpSpec {
+            address,
+            port,
+            user: user.unwrap_or_else(|| c.user.clone()),
+            auth,
+        }))
+    }
+
+    /// Connect dialog → "Import ~/.ssh/config": new names only; existing hosts are kept as they are.
+    fn import_ssh_config(&mut self) {
+        let Some(path) = store::user_ssh_config() else {
+            self.toast("No home directory found");
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.toast(format!("Cannot read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let user = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "root".into());
+        let mut added = 0;
+        for h in sw_core::config::parse_ssh_config(&text, &user) {
+            if !self.saved.hosts.iter().any(|s| s.name == h.name) {
+                self.saved.hosts.push(h);
+                added += 1;
+            }
+        }
+        if added > 0
+            && let Err(e) = self.store.save_hosts(&self.saved)
+        {
+            self.toast(format!("Could not save hosts.toml: {e}"));
+            return;
+        }
+        self.toast(format!("Imported {added} host(s) from {}", path.display()));
+    }
+
+    /// Resolve what panels and the palette asked for on the active host.
+    fn request(&mut self, r: Request) {
+        let idx = self.active;
+        let Some(h) = self.hosts.get_mut(idx) else {
+            return;
+        };
+        let mut msg = None;
+        match r {
+            Request::Run(a) => {
+                let sudo = h.view.info.as_ref().map_or(SudoMode::Unknown, |i| i.sudo);
+                match sw_ssh::collector::action_line(&a, sudo) {
+                    Err(e) => msg = Some(e),
+                    Ok(line) if a.destructive() => {
+                        let as_root = !matches!(sudo, SudoMode::None | SudoMode::Unknown);
+                        h.confirm = Some(ConfirmAction::new(a, &h.view.name, line, as_root));
+                    }
+                    Ok(_) => self.send_action(idx, a),
+                }
+            }
+            Request::OpenPorts => h.ports.open = true,
+            Request::Tunnel { host, port, label } => {
+                if let Some(t) = h
+                    .view
+                    .tunnels
+                    .iter()
+                    .find(|t| t.host == host && t.port == port)
+                {
+                    if let sw_ssh::api::TunnelState::Listening { local_port } = t.state {
+                        msg = Some(format!(
+                            "Already tunnelled: 127.0.0.1:{local_port} → {port}"
+                        ));
+                    }
+                } else {
+                    let id = self.next_action;
+                    self.next_action += 1;
+                    h.view.tunnels.push(crate::state::TunnelView {
+                        id,
+                        host: host.clone(),
+                        port,
+                        label,
+                        state: sw_ssh::api::TunnelState::Listening { local_port: 0 },
+                    });
+                    h.handle.send(Command::OpenTunnel {
+                        id,
+                        host,
+                        port,
+                        local_port: 0,
+                    });
+                    self.layout.left = true;
+                    h.ui.open.insert("net", true);
+                }
+            }
+            Request::CloseTunnel(id) => {
+                h.view.tunnels.retain(|t| t.id != id);
+                h.handle.send(Command::CloseTunnel(id));
+            }
+            Request::Type(_) | Request::NewTerminal(_) if h.demo => {
+                msg = Some("The demo host has no terminal".into());
+            }
+            Request::Type(s) => {
+                if h.tabs.is_empty() {
+                    h.new_tab();
+                }
+                if let Some(t) = h.tabs.get_mut(h.active_tab) {
+                    h.handle.send(Command::PtyInput {
+                        pty: t.id,
+                        bytes: s.into_bytes(),
+                    });
+                    t.view.request_focus();
+                }
+            }
+            Request::NewTerminal(cmd) => {
+                h.new_tab();
+                if let Some(t) = h.tabs.last_mut() {
+                    h.handle.send(Command::PtyInput {
+                        pty: t.id,
+                        bytes: format!("{cmd}\r").into_bytes(),
+                    });
+                    t.view.request_focus();
+                }
+            }
+        }
+        if let Some(m) = msg {
+            self.toast(m);
+        }
+    }
+
+    fn send_action(&mut self, idx: usize, action: Action) {
+        let id = self.next_action;
+        self.next_action += 1;
+        if let Some(h) = self.hosts.get_mut(idx) {
+            h.pending.insert(id, action.clone());
+            h.handle.send(Command::RunAction { id, action });
+        }
+    }
+
+    fn open_picker(&mut self, idx: usize) {
+        let Some(h) = self.hosts.get_mut(idx) else {
+            return;
+        };
+        let units = h
+            .config
+            .as_ref()
+            .map(|c| c.services.units.clone())
+            .unwrap_or_default();
+        h.picker
+            .open_with(&units, h.ui.service_mode, h.ui.poll_secs);
+        h.handle.send(Command::ListUnits);
+    }
+
+    fn palette(&mut self, ctx: &egui::Context) {
+        if !self.cmd_palette.open {
+            return;
+        }
+        let open: Vec<String> = self.hosts.iter().map(|h| h.view.name.clone()).collect();
+        let h = self.hosts.get(self.active);
+        let pctx = PaletteCtx {
+            saved: self
+                .saved
+                .hosts
+                .iter()
+                .filter(|s| !open.contains(&s.name))
+                .map(|s| s.name.clone())
+                .collect(),
+            hosts: open,
+            active: self.active,
+            services: h.map_or_else(Vec::new, |h| {
+                h.view.services.iter().map(|s| s.id.clone()).collect()
+            }),
+            log_sources: h.map_or_else(Vec::new, |h| {
+                h.view.sources.iter().map(|s| s.name.clone()).collect()
+            }),
+            default_jail: h.and_then(|h| h.view.default_jail().map(str::to_owned)),
+            connected: h.is_some(),
+        };
+        let Some(pick) = self.cmd_palette.show(ctx, &pctx) else {
+            return;
+        };
+        let idx = self.active;
+        match pick {
+            Pick::Host(r) => self.request(r),
+            Pick::ToggleLeft => self.layout.left = !self.layout.left,
+            Pick::ToggleRight => self.layout.right = !self.layout.right,
+            Pick::ToggleBottom => self.layout.bottom = !self.layout.bottom,
+            Pick::SwitchHost(i) => self.active = i.min(self.hosts.len().saturating_sub(1)),
+            Pick::ConnectSaved(name) => {
+                if let Some(s) = self.saved.hosts.iter().find(|s| s.name == name).cloned() {
+                    self.connect.open_for(&s);
+                }
+            }
+            Pick::NewHost => self.connect.open_new(),
+            Pick::ChooseServices => self.open_picker(idx),
+            Pick::NewTerminal
+            | Pick::LogSources
+            | Pick::FilterLogs(_)
+            | Pick::RefreshAll
+            | Pick::EnterSudo => {
+                let Some(h) = self.hosts.get_mut(idx) else {
+                    return;
+                };
+                match pick {
+                    Pick::NewTerminal if !h.demo => h.new_tab(),
+                    Pick::LogSources => h.ui.want_log_dialog = true,
+                    Pick::FilterLogs(name) => {
+                        // Solo one source (empty = all) in the logs tab.
+                        for s in &mut h.view.sources {
+                            s.visible = name.is_empty() || s.name == name;
+                        }
+                        h.ui.filter.dirty = true;
+                        h.ui.dock_tab = DockTab::Logs;
+                        self.layout.bottom = true;
+                    }
+                    Pick::RefreshAll => {
+                        for (s, on) in &h.ui.sent_on {
+                            if *on {
+                                h.handle.send(Command::Now(*s));
+                            }
+                        }
+                    }
+                    Pick::EnterSudo => h.handle.send(Command::SudoAsk),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -706,7 +1061,7 @@ impl eframe::App for SecureWireApp {
             self.connect.open_new();
         }
         if act.palette {
-            self.toast("Command palette arrives in M5");
+            self.cmd_palette.toggle();
         }
         if let Some(i) = act.select {
             self.active = i;
@@ -729,6 +1084,7 @@ impl eframe::App for SecureWireApp {
             CentralPanel::no_frame()
                 .frame(bar(BG0))
                 .show(ui, |ui| self.welcome(ui));
+            self.palette(ui.ctx());
             self.dialogs(ui.ctx());
             self.finish(ui);
             return;
@@ -825,7 +1181,10 @@ impl eframe::App for SecureWireApp {
             || h.log_dialog.open
             || h.key_prompt.is_some()
             || h.auth_prompt.is_some()
-            || h.sudo_prompt.is_some();
+            || h.sudo_prompt.is_some()
+            || h.confirm.is_some()
+            || h.ports.open
+            || self.cmd_palette.open;
         CentralPanel::no_frame().frame(bar(BG0)).show(ui, |ui| {
             if h.demo {
                 terminal::demo_screen(ui, &h.view.name, &user);
@@ -855,15 +1214,6 @@ impl eframe::App for SecureWireApp {
                     rows: s.rows,
                 });
             }
-            if let Some(pty) = out.reopen
-                && let Some(t) = h.tabs.iter_mut().find(|t| t.id == pty)
-            {
-                t.exited = None;
-                h.handle.send(Command::OpenPty {
-                    pty,
-                    term: t.term.clone(),
-                });
-            }
             if out.reconnect {
                 h.last_error = None;
                 h.handle.send(Command::Retry(None));
@@ -882,6 +1232,10 @@ impl eframe::App for SecureWireApp {
             }
         });
         self.term_focused = term_focused;
+        let reqs = std::mem::take(&mut self.hosts[self.active].ui.requests);
+        for r in reqs {
+            self.request(r);
+        }
         if let Some(h) = self
             .hosts
             .get_mut(self.active)
@@ -900,6 +1254,7 @@ impl eframe::App for SecureWireApp {
         }
 
         self.sync_sections();
+        self.palette(ui.ctx());
         self.dialogs(ui.ctx());
         self.finish(ui);
         self.bench_tick(ui, frame_start);

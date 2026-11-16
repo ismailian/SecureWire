@@ -324,3 +324,22 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
         .galley(r.center() - galley.size() / 2.0, galley, color);
     resp
 }
+
+/// Action menu under a row or label: opens on click or right-click, closes on pick.
+pub fn row_menu(resp: &egui::Response, add: impl FnOnce(&mut Ui)) {
+    let open = (resp.clicked() || resp.secondary_clicked()).then_some(egui::SetOpenCommand::Toggle);
+    egui::Popup::menu(resp).open_memory(open).show(add);
+}
+
+/// Fixed-width, left-aligned table cell (`add_sized` would center its content).
+pub fn cell(ui: &mut Ui, width: f32, label: egui::Label) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 18.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(width);
+            ui.add(label)
+        },
+    )
+    .inner
+}

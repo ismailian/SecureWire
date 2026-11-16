@@ -147,6 +147,131 @@ impl HostsFile {
     }
 }
 
+/// Import hosts from an OpenSSH client config (`~/.ssh/config`).
+///
+/// Concrete `Host` aliases become hosts; wildcard patterns (`*`, `?`, `!`) are
+/// not hosts, but `Host *` supplies defaults. Supported keys: HostName, User,
+/// Port, IdentityFile, ProxyJump (first hop). `Match` blocks and `Include` are
+/// skipped. `default_user` fills hosts with no User anywhere.
+pub fn parse_ssh_config(text: &str, default_user: &str) -> Vec<HostConfig> {
+    #[derive(Default, Clone)]
+    struct Block {
+        patterns: Vec<String>,
+        host_name: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+        identity: Option<String>,
+        jump: Option<String>,
+    }
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut in_match = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // "Key value" or "Key=value"
+        let (key, value) = match line.split_once(|c: char| c.is_whitespace() || c == '=') {
+            Some((k, v)) => (
+                k.to_ascii_lowercase(),
+                v.trim()
+                    .trim_start_matches('=')
+                    .trim()
+                    .trim_matches('"')
+                    .to_owned(),
+            ),
+            None => continue,
+        };
+        match key.as_str() {
+            "host" => {
+                in_match = false;
+                blocks.push(Block {
+                    patterns: value.split_whitespace().map(str::to_owned).collect(),
+                    ..Default::default()
+                });
+            }
+            "match" => in_match = true,
+            _ if in_match => {}
+            _ => {
+                let Some(b) = blocks.last_mut() else { continue };
+                match key.as_str() {
+                    "hostname" => b.host_name = b.host_name.clone().or(Some(value)),
+                    "user" => b.user = b.user.clone().or(Some(value)),
+                    "port" => b.port = b.port.or(value.parse().ok()),
+                    "identityfile" => b.identity = b.identity.clone().or(Some(value)),
+                    "proxyjump" if value != "none" => {
+                        b.jump = b
+                            .jump
+                            .clone()
+                            .or(value.split(',').next().map(|s| s.trim().to_owned()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let wildcard = |p: &str| p.contains(['*', '?', '!']);
+    let defaults = blocks
+        .iter()
+        .find(|b| b.patterns.iter().any(|p| p == "*"))
+        .cloned()
+        .unwrap_or_default();
+    let mut out: Vec<HostConfig> = Vec::new();
+    for b in &blocks {
+        for alias in b.patterns.iter().filter(|p| !wildcard(p)) {
+            if out.iter().any(|h| &h.name == alias) {
+                continue; // first match wins, as in OpenSSH
+            }
+            let mut h = HostConfig::new(
+                alias,
+                b.host_name.as_deref().unwrap_or(alias),
+                b.user
+                    .as_deref()
+                    .or(defaults.user.as_deref())
+                    .unwrap_or(default_user),
+            );
+            h.port = b.port.or(defaults.port).unwrap_or(22);
+            match b.identity.as_ref().or(defaults.identity.as_ref()) {
+                Some(k) => {
+                    h.auth = AuthMethod::Key;
+                    h.key_path = k.clone();
+                }
+                None => h.auth = AuthMethod::Agent,
+            }
+            h.jump = b.jump.clone().unwrap_or_default();
+            out.push(h);
+        }
+    }
+    out
+}
+
+/// A jump host given as `[user@]host[:port]` (ProxyJump syntax).
+pub fn parse_jump(s: &str) -> Option<(Option<String>, String, u16)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (user, rest) = match s.split_once('@') {
+        Some((u, r)) => (Some(u.to_owned()), r),
+        None => (None, s),
+    };
+    let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
+        // [v6] or [v6]:port
+        let (h, after) = inner.split_once(']')?;
+        let port = match after.strip_prefix(':') {
+            Some(p) => p.parse().ok()?,
+            None => 22,
+        };
+        (h, port)
+    } else {
+        match rest.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h, p.parse().ok()?),
+            _ => (rest, 22),
+        }
+    };
+    (!host.is_empty()).then(|| (user, host.trim_matches(['[', ']']).to_owned(), port))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +315,72 @@ target = "nginx.service"
         );
         assert!(HostConfig::new("", "h", "u").validate().is_err());
         assert!(HostConfig::new("a", "bad host", "u").validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod ssh_config_tests {
+    use super::*;
+
+    #[test]
+    fn import() {
+        let hosts = parse_ssh_config(
+            "# comment
+Host *
+    User admin
+    IdentityFile ~/.ssh/id_ed25519
+
+Host prod web1
+    HostName 203.0.113.10
+    Port 2222
+
+Host db-02
+    HostName=198.51.100.20
+    User deploy
+    ProxyJump bastion,other
+
+Host bastion
+    HostName bastion.example.com
+    IdentityFile ~/.ssh/bastion
+
+Host *.internal !secret
+    User nobody
+
+Match host foo
+    User ignored
+",
+            "me",
+        );
+        let names: Vec<_> = hosts.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["prod", "web1", "db-02", "bastion"]);
+        let prod = &hosts[0];
+        assert_eq!(
+            (prod.address.as_str(), prod.port, prod.user.as_str()),
+            ("203.0.113.10", 2222, "admin")
+        );
+        assert_eq!(
+            (prod.auth, prod.key_path.as_str()),
+            (AuthMethod::Key, "~/.ssh/id_ed25519")
+        );
+        assert_eq!(hosts[2].user, "deploy");
+        assert_eq!(hosts[2].jump, "bastion");
+        assert_eq!(hosts[3].key_path, "~/.ssh/bastion");
+        assert!(
+            parse_ssh_config("Host x\n  HostName 1.2.3.4\n", "me")[0].auth == AuthMethod::Agent
+        );
+    }
+
+    #[test]
+    fn jump_syntax() {
+        assert_eq!(
+            parse_jump("deploy@bastion:2200"),
+            Some((Some("deploy".into()), "bastion".into(), 2200))
+        );
+        assert_eq!(parse_jump("bastion"), Some((None, "bastion".into(), 22)));
+        assert_eq!(
+            parse_jump("[2001:db8::1]:22").map(|j| j.1),
+            Some("2001:db8::1".into())
+        );
+        assert_eq!(parse_jump(""), None);
     }
 }

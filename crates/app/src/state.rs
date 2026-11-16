@@ -107,9 +107,62 @@ pub struct HostView {
     pub log_candidates: Vec<sw_core::logs::LogCandidate>,
     /// Live service mode is actually following the journal (vs. polling fallback).
     pub live_watching: bool,
+    /// Listeners grouped by port (chips), computed when they arrive.
+    pub port_groups: Vec<sw_core::model::PortGroup>,
+    /// One-click tunnels of this host (protocol §13).
+    pub tunnels: Vec<TunnelView>,
+    /// Web requests from access-log sources (Traffic tab).
+    pub traffic: Traffic,
+}
+
+#[derive(Debug, Clone)]
+pub struct TunnelView {
+    pub id: u64,
+    /// Target as seen from the server.
+    pub host: String,
+    pub port: u16,
+    /// What runs there ("mysqld", "nginx.service").
+    pub label: String,
+    pub state: sw_ssh::api::TunnelState,
+}
+
+impl TunnelView {
+    /// Looks like a web UI: offer "Open in browser".
+    pub fn is_http(&self) -> bool {
+        matches!(
+            self.port,
+            80 | 443
+                | 3000
+                | 5000
+                | 5601
+                | 8000
+                | 8008
+                | 8080
+                | 8081
+                | 8443
+                | 8888
+                | 9000
+                | 9090
+                | 9443
+                | 19999
+        ) || [
+            "nginx", "apache", "httpd", "caddy", "grafana", "node", "gunicorn", "uvicorn", "php",
+        ]
+        .iter()
+        .any(|k| self.label.contains(k))
+    }
 }
 
 impl HostView {
+    /// Jail for "Ban IP": `sshd` when present, else the first reported.
+    pub fn default_jail(&self) -> Option<&str> {
+        self.jails
+            .iter()
+            .find(|j| j.name == "sshd")
+            .or(self.jails.first())
+            .map(|j| j.name.as_str())
+    }
+
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
@@ -145,6 +198,9 @@ impl HostView {
             units: vec![],
             log_candidates: vec![],
             live_watching: false,
+            port_groups: Vec::new(),
+            tunnels: Vec::new(),
+            traffic: Traffic::default(),
         }
     }
 
@@ -161,6 +217,18 @@ impl HostView {
     pub fn apply(&mut self, ev: EventKind, logs_visible: bool) {
         let now = Instant::now();
         match ev {
+            // Handled by the app (it owns the dialogs and toasts).
+            EventKind::ActionResult { .. } => {}
+            EventKind::Access(hits) => self.traffic.add(hits),
+            EventKind::Tunnel { id, state } => {
+                if let Some(t) = self.tunnels.iter_mut().find(|t| t.id == id) {
+                    if state == sw_ssh::api::TunnelState::Closed {
+                        self.tunnels.retain(|t| t.id != id);
+                    } else {
+                        t.state = state;
+                    }
+                }
+            }
             EventKind::State(s) => self.state = s,
             EventKind::Connected(i) => self.info = Some(i),
             EventKind::Static(s) => self.stat = s,
@@ -237,6 +305,7 @@ impl HostView {
             }
             EventKind::Probe(p) => self.probe = Some(p),
             EventKind::Listeners(l) => {
+                self.port_groups = sw_core::model::group_ports(&l);
                 self.listeners = l;
                 self.last_sample.insert(Section::Ports, now);
             }
@@ -280,6 +349,8 @@ pub enum DockTab {
     Alerts,
     Processes,
     Connections,
+    /// Web requests from access logs; shown when such a source exists.
+    Traffic,
 }
 
 pub struct LogFilter {
@@ -372,6 +443,26 @@ impl LogFilter {
     }
 }
 
+/// Something a panel asks the app to do.
+#[derive(Debug, Clone)]
+pub enum Request {
+    /// Server action (protocol §7); destructive ones go through the confirm dialog.
+    Run(sw_core::actions::Action),
+    /// Type into the active terminal without pressing Enter.
+    Type(String),
+    /// Open a terminal tab and run this command in it.
+    NewTerminal(String),
+    /// Forward a server port to 127.0.0.1 (`label` names what runs there).
+    Tunnel {
+        host: String,
+        port: u16,
+        label: String,
+    },
+    CloseTunnel(u64),
+    /// The "All ports" table.
+    OpenPorts,
+}
+
 pub struct HostUi {
     pub open: HashMap<&'static str, bool>,
     pub dock_tab: DockTab,
@@ -384,6 +475,10 @@ pub struct HostUi {
     pub sent_throttle: Option<sw_ssh::api::Throttle>,
     /// Set by the logs toolbar / empty state; the app opens the log sources dialog.
     pub want_log_dialog: bool,
+    /// Panel clicks the app resolves after drawing (actions, terminal input).
+    pub requests: Vec<Request>,
+    /// Traffic tab: show only this client's requests.
+    pub traffic_ip: Option<String>,
 }
 
 impl Default for HostUi {
@@ -397,6 +492,8 @@ impl Default for HostUi {
             sent_on: HashMap::new(),
             sent_throttle: None,
             want_log_dialog: false,
+            requests: Vec::new(),
+            traffic_ip: None,
         }
     }
 }
@@ -404,5 +501,110 @@ impl Default for HostUi {
 impl HostUi {
     pub fn is_open(&self, key: &'static str) -> bool {
         self.open.get(key).copied().unwrap_or(true)
+    }
+}
+
+// ───────────────────────── Traffic (access logs) ─────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct IpStat {
+    pub requests: u64,
+    /// 4xx + 5xx answers.
+    pub errors: u64,
+    pub bytes: u64,
+    pub last_ms: i64,
+    pub last_path: String,
+}
+
+/// Requests from access-log sources (nginx/apache), aggregated as they arrive.
+#[derive(Debug, Default)]
+pub struct Traffic {
+    /// Newest last, bounded by [`Traffic::KEEP`].
+    pub recent: VecDeque<(i64, sw_core::logs::AccessHit)>,
+    pub by_ip: HashMap<String, IpStat>,
+    /// Counts per status class: 1xx … 5xx.
+    pub status: [u64; 5],
+    pub total: u64,
+    /// IPs by request count, recomputed per batch (at most [`Traffic::TOP`]).
+    pub top: Vec<String>,
+}
+
+impl Traffic {
+    pub const KEEP: usize = 2000;
+    pub const TOP: usize = 50;
+    /// Distinct IPs kept; beyond it the quietest are dropped.
+    const MAX_IPS: usize = 5000;
+
+    pub fn add(&mut self, hits: Vec<(i64, u16, sw_core::logs::AccessHit)>) {
+        for (ts, _, h) in hits {
+            self.total += 1;
+            if let Some(c) = self
+                .status
+                .get_mut((h.status / 100).saturating_sub(1) as usize)
+            {
+                *c += 1;
+            }
+            let s = self.by_ip.entry(h.ip.clone()).or_default();
+            s.requests += 1;
+            s.errors += u64::from(h.status >= 400);
+            s.bytes += h.bytes;
+            s.last_ms = ts;
+            s.last_path.clone_from(&h.path);
+            self.recent.push_back((ts, h));
+            if self.recent.len() > Self::KEEP {
+                self.recent.pop_front();
+            }
+        }
+        if self.by_ip.len() > Self::MAX_IPS {
+            let mut v: Vec<(u64, String)> = self
+                .by_ip
+                .iter()
+                .map(|(k, s)| (s.requests, k.clone()))
+                .collect();
+            v.sort();
+            for (_, k) in v.into_iter().take(self.by_ip.len() - Self::MAX_IPS) {
+                self.by_ip.remove(&k);
+            }
+        }
+        let mut v: Vec<(&String, &IpStat)> = self.by_ip.iter().collect();
+        v.sort_by(|a, b| {
+            b.1.requests
+                .cmp(&a.1.requests)
+                .then(b.1.last_ms.cmp(&a.1.last_ms))
+        });
+        self.top = v
+            .into_iter()
+            .take(Self::TOP)
+            .map(|(k, _)| k.clone())
+            .collect();
+    }
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::Traffic;
+    use sw_core::logs::AccessHit;
+
+    #[test]
+    fn aggregates_by_ip_and_status() {
+        let hit = |ip: &str, status| AccessHit {
+            ip: ip.into(),
+            status,
+            path: "/".into(),
+            bytes: 10,
+            ..Default::default()
+        };
+        let mut t = Traffic::default();
+        t.add(vec![
+            (1, 0, hit("a", 200)),
+            (2, 0, hit("b", 404)),
+            (3, 0, hit("b", 500)),
+            (4, 0, hit("b", 301)),
+        ]);
+        assert_eq!(t.total, 4);
+        assert_eq!(t.status, [0, 1, 1, 1, 1]);
+        assert_eq!(t.top, ["b", "a"]);
+        assert_eq!(t.by_ip["b"].errors, 2);
+        assert_eq!(t.by_ip["b"].last_ms, 4);
     }
 }

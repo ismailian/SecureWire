@@ -8,7 +8,10 @@ use sw_core::format;
 use sw_core::metrics::RingBuffer;
 use sw_core::model::{ActiveState, ServiceInfo};
 
-use crate::state::{HostUi, HostView};
+use sw_core::actions::Action as SrvAction;
+use sw_core::shell::shell_quote;
+
+use crate::state::{HostUi, HostView, Request};
 use crate::theme::tok::*;
 use crate::widgets::{self as w, right, section};
 
@@ -114,7 +117,7 @@ fn services(
                 });
             }
             for s in &v.services {
-                service_row(ui, s);
+                service_row(ui, s, &v.listeners, &mut hu.requests);
             }
             ui.add_space(6.0);
             if v.services.is_empty() {
@@ -124,7 +127,7 @@ fn services(
                 ServiceMode::Live if v.live_watching => {
                     w::dot(ui, OK);
                     ui.label(w::faint(
-                        "Live · state changes pushed by systemd · resources every 10s",
+                        "Live · state changes pushed by systemd · resources every 30s",
                     ));
                 }
                 ServiceMode::Live => {
@@ -160,9 +163,15 @@ fn services(
     }
 }
 
-fn service_row(ui: &mut Ui, s: &ServiceInfo) {
+fn service_row(
+    ui: &mut Ui,
+    s: &ServiceInfo,
+    listeners: &[sw_core::model::Listener],
+    reqs: &mut Vec<Request>,
+) {
     let failed = s.active == ActiveState::Failed;
     let (color, state) = match s.active {
+        _ if s.sub == "not-found" => (WARN, "unit not found on this host".to_owned()),
         ActiveState::Active | ActiveState::Reloading if s.sub == "running" => {
             (OK, "running".to_owned())
         }
@@ -178,7 +187,8 @@ fn service_row(ui: &mut Ui, s: &ServiceInfo) {
         (false, false) => format!("{state} · {age}"),
     };
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 38.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 38.0), Sense::click());
+    service_menu(&resp, s, listeners, reqs);
     let bg = match (failed, resp.hovered()) {
         (true, _) => Some(ERR_DIM),
         (false, true) => Some(BG2),
@@ -239,6 +249,10 @@ fn firewall(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
         ph::WALL,
         "Firewall",
         |ui| match (&v.firewall, v.section_errors.get(&Section::Fw)) {
+            (Some(f), _) if f.active && f.accepts_all() => {
+                w::badge(ui, &format!("{} · accepts all", f.backend), WARN, WARN_DIM)
+                    .on_hover_text("Active, but the default incoming policy accepts everything");
+            }
             (Some(f), _) if f.active => {
                 w::badge(ui, &format!("{} active", f.backend), OK, OK_DIM);
             }
@@ -318,6 +332,7 @@ fn firewall(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
 }
 
 fn security(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
+    let mut reqs = Vec::new();
     let mut is_open = open(hu, "security");
     let banned: u32 = v.jails.iter().map(|j| j.currently_banned).sum();
     section(
@@ -361,12 +376,35 @@ fn security(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
                     w::sparkline(ui, 34.0, 48, &[(&rb, WARN, true)], None);
                     ui.label(w::meta(format!("{} in 24 h", a.total())));
                     for (ip, n) in a.top.iter().take(6) {
-                        let banned = v.jails.iter().any(|j| j.banned_ips.iter().any(|b| b == ip));
+                        let jail = v
+                            .jails
+                            .iter()
+                            .find(|j| j.banned_ips.iter().any(|b| b == ip));
                         ui.horizontal(|ui| {
                             ui.label(w::mono(ip, TX1));
                             right(ui, |ui| {
-                                if banned {
+                                if let Some(j) = jail {
+                                    if ui
+                                        .small_button("Unban")
+                                        .on_hover_text(format!("fail2ban jail {}", j.name))
+                                        .clicked()
+                                    {
+                                        reqs.push(Request::Run(SrvAction::Unban {
+                                            jail: j.name.clone(),
+                                            ip: ip.clone(),
+                                        }));
+                                    }
                                     w::badge(ui, "banned", ERR, ERR_DIM);
+                                } else if let Some(j) = v.default_jail()
+                                    && ui
+                                        .small_button(RichText::new("Ban").color(ERR))
+                                        .on_hover_text(format!("Ban in fail2ban jail {j}"))
+                                        .clicked()
+                                {
+                                    reqs.push(Request::Run(SrvAction::Ban {
+                                        jail: j.to_owned(),
+                                        ip: ip.clone(),
+                                    }));
                                 }
                                 ui.label(w::meta(n.to_string()));
                             });
@@ -377,6 +415,7 @@ fn security(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
         },
     );
     hu.open.insert("security", is_open);
+    hu.requests.extend(reqs);
 }
 
 fn scheduled(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
@@ -422,4 +461,115 @@ fn scheduled(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
         },
     );
     hu.open.insert("scheduled", is_open);
+}
+
+/// Right-click (or click) a service row: actions with confirmation, or a terminal command.
+/// TCP ports this service listens on: by MainPID when `ss -p` shows pids (root), else by
+/// process name ("mysqld" ~ "mysql.service"). One entry per port.
+fn service_ports<'a>(
+    s: &ServiceInfo,
+    listeners: &'a [sw_core::model::Listener],
+) -> Vec<&'a sw_core::model::Listener> {
+    let short = s.short_name();
+    let mut out: Vec<&sw_core::model::Listener> = Vec::new();
+    for l in listeners.iter().filter(|l| l.proto == "tcp") {
+        let by_pid = s.main_pid > 0 && l.pids.contains(&s.main_pid);
+        let by_name = l.pids.is_empty()
+            && !l.process.is_empty()
+            && (short.starts_with(l.process.as_str()) || l.process.starts_with(short));
+        if (by_pid || by_name) && !out.iter().any(|o| o.port == l.port) {
+            out.push(l);
+        }
+    }
+    out
+}
+
+fn service_menu(
+    resp: &egui::Response,
+    s: &ServiceInfo,
+    listeners: &[sw_core::model::Listener],
+    reqs: &mut Vec<Request>,
+) {
+    let resp = resp.clone().on_hover_text("Click for actions");
+    let show = |ui: &mut Ui| {
+        let id = s.id.clone();
+        let mut picked = None;
+        let mut pick = |r: Request| picked = Some(r);
+        if ui
+            .button(format!("{}  Restart", ph::ARROWS_CLOCKWISE))
+            .clicked()
+        {
+            pick(Request::Run(SrvAction::ServiceRestart(id.clone())));
+        }
+        if ui
+            .button(format!("{}  Reload", ph::ARROW_CLOCKWISE))
+            .clicked()
+        {
+            pick(Request::Run(SrvAction::ServiceReload(id.clone())));
+        }
+        if s.active == ActiveState::Active {
+            if ui
+                .button(RichText::new(format!("{}  Stop", ph::STOP)).color(ERR))
+                .clicked()
+            {
+                pick(Request::Run(SrvAction::ServiceStop(id.clone())));
+            }
+        } else if ui.button(format!("{}  Start", ph::PLAY)).clicked() {
+            pick(Request::Run(SrvAction::ServiceStart(id.clone())));
+        }
+        ui.separator();
+        if ui
+            .button(format!("{}  Status in terminal", ph::TERMINAL))
+            .clicked()
+        {
+            pick(Request::Type(format!(
+                "systemctl status --no-pager -- {}",
+                shell_quote(&id)
+            )));
+        }
+        if ui
+            .button(format!("{}  Follow logs in a new tab", ph::SCROLL))
+            .clicked()
+        {
+            pick(Request::NewTerminal(format!(
+                "journalctl -f -n 100 -u {}",
+                shell_quote(&id)
+            )));
+        }
+        let ports = service_ports(s, listeners);
+        if !ports.is_empty() {
+            ui.separator();
+        }
+        for l in ports {
+            if ui
+                .button(format!(
+                    "{}  Tunnel port {} to this computer",
+                    ph::ARROWS_LEFT_RIGHT,
+                    l.port
+                ))
+                .on_hover_text(format!(
+                    "127.0.0.1 here → {}:{} on the server, over this SSH connection",
+                    l.reach_addr(),
+                    l.port
+                ))
+                .clicked()
+            {
+                pick(Request::Tunnel {
+                    host: l.reach_addr(),
+                    port: l.port,
+                    label: s.short_name().to_owned(),
+                });
+            }
+        }
+        ui.separator();
+        if ui.button(format!("{}  Copy name", ph::COPY)).clicked() {
+            ui.ctx().copy_text(id.clone());
+            ui.close();
+        }
+        if let Some(r) = picked {
+            reqs.push(r);
+            ui.close();
+        }
+    };
+    w::row_menu(&resp, show);
 }

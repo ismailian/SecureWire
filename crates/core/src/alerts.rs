@@ -134,6 +134,37 @@ pub fn evaluate(i: Inputs<'_>, t: &Thresholds) -> Vec<Alert> {
         }
     }
 
+    // An active firewall whose default policy accepts everything protects nothing.
+    if let Some(fw) = i.firewall.filter(|f| f.active && f.accepts_all()) {
+        let mut ports: Vec<u16> = i
+            .listeners
+            .iter()
+            .filter(|l| l.is_public())
+            .map(|l| l.port)
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        if !ports.is_empty() {
+            let list = ports
+                .iter()
+                .take(8)
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(Alert {
+                key: "fw:accepts-all".into(),
+                severity: Severity::Warn,
+                title: format!("{} is active but accepts all incoming traffic", fw.backend),
+                detail: format!(
+                    "Default incoming policy is {}; {} public port(s) reachable: {list}",
+                    fw.incoming,
+                    ports.len()
+                ),
+                actions: vec![],
+            });
+        }
+    }
+
     // A public listener the firewall doesn't mention (only when the firewall is active and
     // denies incoming by default, i.e. when the rules are the source of truth).
     if let Some(fw) = i
@@ -232,18 +263,21 @@ mod m3_tests {
                 addr: "0.0.0.0".into(),
                 port: 22,
                 process: "sshd".into(),
+                ..Default::default()
             },
             Listener {
                 proto: "tcp".into(),
                 addr: "0.0.0.0".into(),
                 port: 6379,
                 process: "redis-server".into(),
+                ..Default::default()
             },
             Listener {
                 proto: "tcp".into(),
                 addr: "127.0.0.1".into(),
                 port: 3306,
                 process: String::new(),
+                ..Default::default()
             },
         ];
         let fw = Firewall {
@@ -283,5 +317,43 @@ mod m3_tests {
             )
             .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod accept_all_tests {
+    use super::*;
+    use crate::model::{Firewall, Listener, PortFirewall};
+
+    // Seen on a real host: iptables "active", policy ACCEPT, no rules.
+    #[test]
+    fn accept_policy_is_flagged_and_ports_are_open() {
+        let fw = Firewall {
+            backend: "iptables".into(),
+            active: true,
+            incoming: "accept".into(),
+            ..Default::default()
+        };
+        assert_eq!(fw.port_status(22), PortFirewall::Open);
+        let listeners = [Listener {
+            proto: "tcp".into(),
+            addr: "0.0.0.0".into(),
+            port: 22,
+            ..Default::default()
+        }];
+        let a = evaluate(
+            Inputs {
+                listeners: &listeners,
+                firewall: Some(&fw),
+                ..Default::default()
+            },
+            &Thresholds::default(),
+        );
+        assert!(a.iter().any(|x| x.key == "fw:accepts-all"), "{a:?}");
+        let deny = Firewall {
+            incoming: "deny".into(),
+            ..fw
+        };
+        assert_eq!(deny.port_status(22), PortFirewall::Blocked);
     }
 }

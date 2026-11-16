@@ -14,6 +14,7 @@ pub mod demo;
 pub mod handle;
 pub mod pipeline;
 mod remote;
+mod tunnel;
 
 pub use api::{Command, Event, EventKind, HostId};
 pub use demo::{spawn_demo_host, spawn_demo_host_rate};

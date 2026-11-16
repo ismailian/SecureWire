@@ -66,6 +66,7 @@ fn spec(port: u16, auth: AuthSpec, dir: &TempDir) -> ConnectSpec {
             user_file: None,
             app_file: dir.0.join("known_hosts"),
         },
+        jump: None,
         connect_timeout: Duration::from_secs(1),
     }
 }
@@ -160,6 +161,7 @@ fn password_tofu_pty_resize_and_exit() {
         matches!(e, EventKind::HostKeyPrompt { .. })
     });
     let EventKind::HostKeyPrompt {
+        host,
         algorithm,
         fingerprint,
         status,
@@ -168,6 +170,7 @@ fn password_tofu_pty_resize_and_exit() {
         unreachable!()
     };
     assert_eq!(algorithm, "ssh-ed25519");
+    assert_eq!(host, format!("127.0.0.1:{}", srv.port));
     assert!(fingerprint.starts_with("SHA256:"));
     assert_eq!(status, HostKeyStatus::Unknown);
     f.host.send(Command::HostKey(KeyDecision::Trust));
@@ -534,6 +537,62 @@ fn probe_sudo_and_live_collector_over_ssh() {
         u.iter()
             .any(|x| x.name == "redis-server.service" && x.active == "failed")
     );
+
+    // M5 actions (protocol §7): run through the held sudo password on their own channel.
+    use sw_core::actions::Action;
+    f.host.send(Command::RunAction {
+        id: 7,
+        action: Action::ServiceRestart("nginx.service".into()),
+    });
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::ActionResult { id: 7, .. })
+    });
+    let EventKind::ActionResult {
+        ok, exit, output, ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert!(ok && exit == Some(0), "{output}");
+    assert!(
+        output.contains("restart nginx.service as root"),
+        "{output:?}"
+    );
+    // A failing command reports its exit status and stderr.
+    f.host.send(Command::RunAction {
+        id: 8,
+        action: Action::ServiceStop("missing.service".into()),
+    });
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::ActionResult { id: 8, .. })
+    });
+    let EventKind::ActionResult {
+        ok, exit, output, ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert!(!ok && exit == Some(5), "{exit:?} {output}");
+    assert!(output.contains("not loaded"), "{output:?}");
+    // Refused arguments never reach the server.
+    f.host.send(Command::RunAction {
+        id: 9,
+        action: Action::ServiceStop("x; reboot".into()),
+    });
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::ActionResult { id: 9, .. })
+    });
+    assert!(
+        matches!(
+            ev,
+            EventKind::ActionResult {
+                ok: false,
+                exit: None,
+                ..
+            }
+        ),
+        "{ev:?}"
+    );
 }
 
 #[test]
@@ -646,4 +705,150 @@ fn logs_journal_and_files_over_ssh() {
             .any(|x| x.target.ends_with("nginx/error.log")
                 && x.preset == sw_core::logs::Preset::Nginx)
     );
+}
+
+#[test]
+fn jump_host_forwards_to_target_with_its_own_host_key() {
+    let jump = support::start();
+    let target = support::start();
+    let dir = TempDir::new("jump");
+    let mut s = spec(target.port, password(), &dir);
+    s.jump = Some(sw_ssh::api::JumpSpec {
+        address: "127.0.0.1".into(),
+        port: jump.port,
+        user: support::USER.into(),
+        auth: password(),
+    });
+    let net = Net::start().unwrap();
+    let (tx, rx) = channel();
+    let host = net.connect(1, s, tx, Arc::new(|| {}));
+    let f = Fixture {
+        _net: net,
+        host,
+        rx,
+        _dir: dir,
+        seen: Default::default(),
+    };
+    // Two prompts: the jump host first, then the target through the tunnel.
+    let mut asked = Vec::new();
+    wait_for(&f, KeyDecision::Once, |e| {
+        if let EventKind::HostKeyPrompt { host, .. } = e {
+            asked.push(host.clone());
+        }
+        matches!(e, EventKind::Connected(_))
+    });
+    assert_eq!(
+        asked,
+        [
+            format!("127.0.0.1:{}", jump.port),
+            format!("127.0.0.1:{}", target.port)
+        ]
+    );
+    assert_eq!(
+        jump.observed.lock().unwrap().forwards,
+        [("127.0.0.1".to_string(), target.port as u32)]
+    );
+    // The terminal runs on the target, inside the jump host's channel.
+    let term = open_term(&f);
+    wait_screen(&term, "Welcome to the SecureWire test server");
+    type_line(&f, "echo through-the-jump");
+    wait_screen(&term, "through-the-jump");
+    assert_eq!(
+        target.observed.lock().unwrap().sizes.first(),
+        Some(&(100, 30))
+    );
+}
+
+#[test]
+fn tunnel_forwards_a_local_port_over_the_same_connection() {
+    use std::io::{Read, Write};
+    // Stand-in for "MySQL on the server": an echo service the test server can reach.
+    let echo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in echo.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut s = s;
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = s.read(&mut buf) {
+                    if n == 0 || s.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let srv = support::start();
+    let f = connect(srv.port, password(), TempDir::new("tunnel"));
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Connected(_))
+    });
+    f.host.send(Command::OpenTunnel {
+        id: 5,
+        host: "127.0.0.1".into(),
+        port: echo_port,
+        local_port: 0,
+    });
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Tunnel { id: 5, .. })
+    });
+    let EventKind::Tunnel {
+        state: sw_ssh::api::TunnelState::Listening { local_port },
+        ..
+    } = ev
+    else {
+        panic!("{ev:?}")
+    };
+    // Two clients at once, each its own channel on the one SSH connection.
+    for msg in ["hello through the tunnel", "second client"] {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(msg.as_bytes()).unwrap();
+        let mut got = vec![0u8; msg.len()];
+        c.read_exact(&mut got).unwrap();
+        assert_eq!(got, msg.as_bytes());
+    }
+    assert_eq!(
+        srv.observed.lock().unwrap().sessions,
+        1,
+        "no second TCP connection"
+    );
+    assert!(
+        srv.observed
+            .lock()
+            .unwrap()
+            .forwards
+            .iter()
+            .any(|(h, p)| h == "127.0.0.1" && *p == echo_port as u32)
+    );
+    // Hostile targets are refused before anything is bound.
+    f.host.send(Command::OpenTunnel {
+        id: 6,
+        host: "example.com; rm -rf /".into(),
+        port: 80,
+        local_port: 0,
+    });
+    let ev = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Tunnel { id: 6, .. })
+    });
+    assert!(matches!(
+        ev,
+        EventKind::Tunnel {
+            state: sw_ssh::api::TunnelState::Failed(_),
+            ..
+        }
+    ));
+    // Closing releases the local port.
+    f.host.send(Command::CloseTunnel(5));
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(
+            e,
+            EventKind::Tunnel {
+                id: 5,
+                state: sw_ssh::api::TunnelState::Closed
+            }
+        )
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(std::net::TcpListener::bind(("127.0.0.1", local_port)).is_ok());
 }

@@ -5,10 +5,12 @@
 //!
 //! Wire format: `design/collector-protocol.md`.
 
+pub mod actions;
 pub mod alerts;
 pub mod config;
 pub mod format;
 pub mod frame;
+pub mod fuzzy;
 pub mod logs;
 pub mod metrics;
 pub mod model;

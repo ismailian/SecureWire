@@ -439,7 +439,7 @@ struct Tier {
     next: Instant,
 }
 
-const LOG_SOURCES: [(&str, LogKind, &str, Preset); 6] = [
+const LOG_SOURCES: [(&str, LogKind, &str, Preset); 7] = [
     (
         "nginx",
         LogKind::File,
@@ -471,9 +471,15 @@ const LOG_SOURCES: [(&str, LogKind, &str, Preset); 6] = [
         "php8.3-fpm.service",
         Preset::Generic,
     ),
+    (
+        "nginx-access",
+        LogKind::File,
+        "/var/log/nginx/access.log",
+        Preset::Nginx,
+    ),
 ];
 
-const LOG_LINES: [&[&str]; 6] = [
+const LOG_LINES: [&[&str]; 7] = [
     &[
         "2026/11/12 13:05:01 [error] 1123#1123: *88412 connect() failed (111: Connection refused) while connecting to upstream, client: 198.51.100.77, server: api.example.com, upstream: \"http://127.0.0.1:6379\"",
         "2026/11/12 13:05:02 [warn] 1123#1123: *88413 an upstream response is buffered to a temporary file /var/cache/nginx/proxy_temp/4/02/0000000024",
@@ -501,6 +507,17 @@ const LOG_LINES: [&[&str]; 6] = [
     &[
         "WARNING: [pool www] server reached pm.max_children setting (20), consider raising it",
         "NOTICE: [pool www] child 2290 started",
+    ],
+    &[
+        r#"203.0.113.50 - - [12/Nov/2026:13:05:01 +0000] "GET / HTTP/2.0" 200 5120 "-" "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0""#,
+        r#"203.0.113.50 - - [12/Nov/2026:13:05:01 +0000] "GET /static/app.css HTTP/2.0" 200 18234 "https://example.com/" "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0""#,
+        r#"192.0.2.44 - - [12/Nov/2026:13:05:02 +0000] "POST /api/orders HTTP/1.1" 201 312 "-" "okhttp/4.12.0""#,
+        r#"192.0.2.44 - - [12/Nov/2026:13:05:02 +0000] "GET /api/orders/88412 HTTP/1.1" 502 157 "-" "okhttp/4.12.0""#,
+        r#"198.51.100.203 - - [12/Nov/2026:13:05:03 +0000] "POST /wp-login.php HTTP/1.1" 404 153 "-" "Mozilla/5.0 (compatible; scanner)""#,
+        r#"198.51.100.203 - - [12/Nov/2026:13:05:03 +0000] "GET /.env HTTP/1.1" 404 153 "-" "Mozilla/5.0 (compatible; scanner)""#,
+        r#"198.51.100.203 - - [12/Nov/2026:13:05:04 +0000] "GET /wp-admin/setup-config.php HTTP/1.1" 404 153 "-" "Mozilla/5.0 (compatible; scanner)""#,
+        r#"198.51.100.77 - - [12/Nov/2026:13:05:05 +0000] "GET /health HTTP/1.1" 200 2 "-" "kube-probe/1.31""#,
+        r#"2001:db8::7 - - [12/Nov/2026:13:05:06 +0000] "GET /feed.xml HTTP/1.1" 304 0 "-" "Feedly/1.0""#,
     ],
 ];
 
@@ -667,7 +684,12 @@ impl DemoHost {
             }
             if now >= self.next_log {
                 let n = self.log_line();
-                self.send([EventKind::Logs(vec![n])]);
+                // Access-log lines also feed the Traffic tab, through the real parser.
+                let hit = (usize::from(n.source) == 6)
+                    .then(|| sw_core::logs::parse_access(&n.msg))
+                    .flatten()
+                    .map(|h| EventKind::Access(vec![(n.ts_ms, n.source, h)]));
+                self.send(std::iter::once(EventKind::Logs(vec![n])).chain(hit));
                 self.next_log = now
                     + match self.log_rate {
                         Some(r) => Duration::from_secs_f64(1.0 / r.max(0.1)),
@@ -740,6 +762,29 @@ impl DemoHost {
                 self.units = u;
                 self.emit(Section::Svc);
             }
+            // Nothing runs on a demo host: report what would have run.
+            Command::RunAction { id, action } => {
+                let output = match crate::collector::action_line(&action, SudoMode::Root) {
+                    Ok(line) => format!(
+                        "(demo host — nothing was run)
+$ {line}
+"
+                    ),
+                    Err(e) => e,
+                };
+                self.send([EventKind::ActionResult {
+                    id,
+                    ok: true,
+                    exit: Some(0),
+                    output,
+                }]);
+            }
+            Command::OpenTunnel { id, .. } => self.send([EventKind::Tunnel {
+                id,
+                state: crate::api::TunnelState::Failed(
+                    "Demo host: there is no server to tunnel to".into(),
+                ),
+            }]),
             // Terminal, host-key and connection commands have no meaning for the demo host.
             _ => {}
         }
@@ -748,7 +793,7 @@ impl DemoHost {
     fn log_line(&mut self) -> LogLine {
         let rng = &mut self.server.rng;
         // redis has stopped logging (it's dead); weight the rest.
-        let src = *rng.pick(&[0usize, 0, 0, 1, 2, 2, 3, 3, 3, 5]);
+        let src = *rng.pick(&[0usize, 0, 0, 1, 2, 2, 3, 3, 3, 5, 6, 6, 6, 6, 6, 6]);
         let msg = *rng.pick(LOG_LINES[src]);
         let level = match LOG_SOURCES[src].1 {
             LogKind::Journal

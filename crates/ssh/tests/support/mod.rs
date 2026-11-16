@@ -81,6 +81,8 @@ pub struct Observed {
     /// (cols, rows) from pty-req and window-change, in order.
     pub sizes: Vec<(u32, u32)>,
     pub sessions: usize,
+    /// direct-tcpip (ProxyJump) targets, in order.
+    pub forwards: Vec<(String, u32)>,
 }
 
 pub struct TestServer {
@@ -243,6 +245,39 @@ impl server::Handler for Shell {
         Ok(())
     }
 
+    /// ProxyJump: connect to the requested address and relay bytes both ways.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.obs
+            .lock()
+            .unwrap()
+            .forwards
+            .push((host_to_connect.to_owned(), port_to_connect));
+        let Ok(port) = u16::try_from(port_to_connect) else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        match tokio::net::TcpStream::connect((host_to_connect.to_owned(), port)).await {
+            Ok(mut sock) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut sock).await;
+                });
+            }
+            Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+
     async fn pty_request(
         &mut self,
         _channel: ChannelId,
@@ -364,6 +399,10 @@ impl server::Handler for Shell {
             if stdin.write_all(data).await.is_err() {
                 self.stdins.remove(&channel);
             }
+            return Ok(());
+        }
+        // Only shell channels echo; forwarded (direct-tcpip) channels are relayed by their stream.
+        if !self.lines.contains_key(&channel) {
             return Ok(());
         }
         for &b in data {

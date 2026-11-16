@@ -3,9 +3,9 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** M4 done (2026-11-13) — logs: discovery dialog, journal / file / sudo-file channels (≤ 3 per host), parsing on the net thread, filters, follow, resume by journal cursor; `--bench-ui` meets the 50 lines/s budget. M3 (services, firewall, security, scheduled) and M2 (metrics) are live. Tested against a fake host under local bash. Next: M5.
+**Status:** M5 done (2026-11-16) — actions with confirmation (services, kill, ban/unban, largest dirs, who's on port), command palette with parameter prompts, `~/.ssh/config` import, ProxyJump, Ctrl 1…9, one-click tunnels over the same connection, listening-sockets table, Traffic tab (nginx/apache access logs) and IP menus. **First real-host check** (Ubuntu 26.04 VM, sudo-rs): probe, sudo, every section, Live services, logs, actions, vi/htop all work; the collector now runs under one sudo per session (D-029). M0–M4 are live. Next: M6 (CI, perf pass, packaging).
 
-Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB.
+Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB. M5 real host (2-vCPU VM): collector ~0.4 % of one core in steady state (budget 0.1 % not met — the 2 s fast tier alone is 0.23 %, protocol §14), monitoring traffic ~640 B/s, RTT 1–2 ms.
 
 ---
 
@@ -71,15 +71,18 @@ crates/
     src/logs.rs            # Level, LogLine, presets, detect_level(), sanitize()
     src/alerts.rs          # threshold rules → Vec<Alert>
     src/shell.rs           # shell_quote(), is_valid_unit(), is_valid_path()
+    src/actions.rs         # server actions (protocol §7): fixed templates + validated args → exact command
+    src/fuzzy.rs           # palette fuzzy match
     src/format.rs          # bytes / rate / duration formatting rules
     src/parse/probe.rs     # probe.sh key=value output → Probe
-    src/config.rs          # hosts.toml types (HostConfig, HostsFile) — no I/O
+    src/config.rs          # hosts.toml types (HostConfig, HostsFile) — no I/O; ~/.ssh/config import, ProxyJump parsing
   ssh/   securewire-ssh (lib sw_ssh) — net side
     src/api.rs             # Command / Event / EventKind / SudoMode / Throttle: the UI↔net contract
     src/pipeline.rs        # Frame → EventKind (trackers, alerts); shared by the demo and the real actor
     src/demo.rs            # fake server: byte-exact collector output through the real decoder + pipeline
     src/collector.rs       # embedded collector.sh / probe.sh, launch command, control-line builders
-    src/remote.rs          # exec channels: run_probe, verify_sudo, start_collector (reader + 30 ms packet coalescing)
+    src/remote.rs          # exec channels: run_probe, verify_sudo, start_collector (reader + 30 ms packet coalescing), log channels (+ access-log parsing), run_exec
+    src/tunnel.rs          # one-click tunnels: 127.0.0.1 listener → direct-tcpip on the same connection (protocol §13)
     src/actor.rs           # russh HostActor: connect, host-key TOFU, auth, PTY channels, keepalive, reconnect
     src/handle.rs          # HostHandle / CmdTx (same handle for demo and real hosts)
     src/lib.rs             # Net: the net thread + Net::connect()
@@ -88,12 +91,14 @@ crates/
     tests/support/fakehost.rs  # that fake host; the test SSH server runs exec requests inside it
                            # test keys are generated per run (temp dir); no private keys in the repo
     examples/dev_sshd.rs   # the same fake server on 127.0.0.1:2222 for manual GUI testing
+    examples/real_host.rs  # drive the real actor against a real server (SW_REAL=user@host SW_REAL_PASS=…; SW_REAL_PROFILE / SW_REAL_STEADY = server CPU per section)
   app/   securewire (bin) — eframe App
     src/main.rs, app.rs    # NativeOptions (glow), event drain, panel order, section ON/OFF diffing, focus throttle
     src/theme.rs           # tokens + Visuals + fonts — the only place colors are constructed
     src/state.rs           # HostView (data, ring buffers, LogStore), HostUi (open sections, LogFilter)
     src/store.rs           # config dir: hosts.toml load/save (atomic), SecureWire known_hosts path
-    src/dialogs.rs         # Connect, Host key (TOFU / changed), Auth retry
+    src/dialogs.rs         # Connect, Host key (TOFU / changed), Auth retry, Sudo, service picker, log sources, Confirm action, action output, Listening sockets
+    src/palette.rs         # command palette (Ctrl Shift P): fuzzy items, parameter prompts → Request
     src/widgets.rs         # section, sparkline, bar, badge, dot, switch, icon_button, toggle_chip
     src/panels/            # topbar, status, system (left), watch (right), dock (bottom), terminal (central)
   term/  securewire-term (lib sw_term) — Terminal (alacritty_terminal + VT parser behind a FairMutex),
@@ -235,6 +240,7 @@ SW_FRAME_STATS=frames.txt cargo run --release -p securewire   # append repaints-
 cargo run -p securewire -- --connect user@host[:port] [--key PATH]   # pre-filled Connect dialog
 cargo run -p securewire-ssh --example dev_sshd # local fake SSH server: 127.0.0.1:2222, tester / securewire-test
 cargo test -p securewire-ssh --test connect   # real actor vs in-process server (no Docker, no VPS)
+SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_host   # check against a real server (add SW_REAL_STEADY=1 for per-section server CPU)
 ```
 
 ## 9. Testing strategy
@@ -260,11 +266,11 @@ cargo test -p securewire-ssh --test connect   # real actor vs in-process server 
 | | Scope | Done when |
 |---|---|---|
 | **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. Open: Inter + JetBrains Mono not embedded yet (egui default fonts in use) |
-| **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** vim/htop/tmux on a real VPS; ssh-agent path untested (agent service disabled on dev machine) |
+| **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** tmux on a real host (vi + htop verified on a VM in M5); ssh-agent path untested (agent service disabled on dev machine) |
 | **M2** ✅ | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling (inactive host tabs run Hidden), status bar | Done 2026-11-12 against a fake host (3 collector tests + full SSH e2e test + GUI check). **Open:** real-VPS check of §8 targets; sh fallback for hosts without bash; shellcheck |
 | **M3** ✅ | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Done 2026-11-12: 6 collector tests (incl. sudo password / wrong password / no sudo), SSH e2e covers collector restart with privilege, Live watcher via `sudo -S`, unit list. **Open:** "failure within 1 s" needs a real systemd host to measure |
 | **M4** ✅ | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | Done 2026-11-13: `--bench-ui` p99 1.82 ms at 50 lines/s; SSH e2e test streams journal + file lines and discovers sources; discovery tested in both privilege modes |
-| **M5** | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts | Daily-driver for 3 hosts |
+| **M5** ✅ | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts; added on request: tunnels, sockets table, Traffic tab, IP actions | Done 2026-11-16: 11 SSH e2e tests (jump host, actions via sudo, tunnel), real-VM check (`examples/real_host.rs`) + GUI check. **Open:** "daily driver for 3 hosts" needs the user's own use; collector CPU above budget (M6) |
 | **M6** | Perf pass, packaging (Windows MSI / Linux AppImage + .deb / macOS dmg), sudoers snippet docs | Budgets in §6 verified and recorded |
 
 Out of scope for v1: editing firewall rules, file manager/SFTP, port forwarding UI, Windows/BSD servers, light theme, user-arranged docking.

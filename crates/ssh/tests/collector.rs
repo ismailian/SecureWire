@@ -30,7 +30,8 @@ impl Run {
         Self::start_priv(tag, tiers, "none", None)
     }
 
-    /// `privilege`: none | root | nopasswd | password; `password` is written after the script.
+    /// `privilege`: none | root | password — launched exactly like the real client does
+    /// (`collector::launch_with_tiers`, D-029): the password line first, then the script.
     fn start_priv(
         tag: &str,
         tiers: (u32, u32, u32),
@@ -41,15 +42,14 @@ impl Run {
             eprintln!("SKIP: no bash found (set SW_TEST_BASH)");
             return None;
         };
+        let p = match privilege {
+            "root" => sw_ssh::collector::Priv::Root,
+            "password" => sw_ssh::collector::Priv::Password,
+            _ => sw_ssh::collector::Priv::None,
+        };
+        let tiers = (tiers.0 as u64, tiers.1 as u64, tiers.2 as u64);
         let mut child = Command::new(host.bash())
-            .args([
-                "-s",
-                "securewire-collector",
-                &tiers.0.to_string(),
-                &tiers.1.to_string(),
-                &tiers.2.to_string(),
-                privilege,
-            ])
+            .args(["-c", &sw_ssh::collector::launch_with_tiers(tiers, p)])
             .envs(host.env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -57,10 +57,10 @@ impl Run {
             .spawn()
             .expect("spawn bash");
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(SCRIPT.as_bytes()).unwrap();
         if let Some(pw) = password {
             writeln!(stdin, "{pw}").unwrap();
         }
+        stdin.write_all(SCRIPT.as_bytes()).unwrap();
         let mut stdout = child.stdout.take().unwrap();
         let (tx, out) = channel();
         std::thread::spawn(move || {
@@ -127,7 +127,7 @@ fn is_data(f: &Frame, s: Section) -> bool {
 
 #[test]
 fn every_m2_section_parses_and_controls_work() {
-    let Some(mut r) = Run::start("all", (1, 1, 0)) else {
+    let Some(mut r) = Run::start("all", (1, 1, 1)) else {
         return;
     };
 
@@ -362,43 +362,39 @@ fn m3_sections_with_sudo_password() {
 
 #[test]
 fn privileged_sections_need_sudo() {
-    // No privilege → fw/f2b report needs-sudo; a wrong password behaves the same way.
-    for (tag, privilege, pw) in [
-        ("nopriv", "none", None),
-        ("badpw", "password", Some("wrong")),
-    ] {
-        let Some(mut r) = Run::start_priv(tag, (1, 1, 1), privilege, pw) else {
-            return;
-        };
-        let frames = r.until(10, |f| {
-            matches!(
-                f,
-                Frame::Err {
-                    section: Section::F2b,
-                    ..
-                }
-            )
-        });
-        let code = |s: Section| {
-            frames.iter().find_map(|f| match f {
-                Frame::Err { section, code, .. } if *section == s => Some(code.clone()),
-                _ => None,
-            })
-        };
-        let fw = code(Section::Fw);
-        if privilege == "none" {
-            assert_eq!(fw.as_deref(), Some("needs-sudo"), "{tag}");
-            assert_eq!(code(Section::F2b).as_deref(), Some("needs-sudo"), "{tag}");
-        } else {
-            // sudo refuses the wrong password → both sections report an error, never empty data.
-            assert_eq!(fw.as_deref(), Some("unavailable"), "{tag}");
-            assert_eq!(code(Section::F2b).as_deref(), Some("unavailable"), "{tag}");
-            assert!(
-                !data_of(&frames, Section::Fw) && !data_of(&frames, Section::F2b),
-                "{tag}"
-            );
-        }
-    }
+    // No privilege → fw/f2b report needs-sudo, never empty data.
+    let Some(mut r) = Run::start_priv("nopriv", (1, 1, 1), "none", None) else {
+        return;
+    };
+    let frames = r.until(10, |f| {
+        matches!(
+            f,
+            Frame::Err {
+                section: Section::F2b,
+                ..
+            }
+        )
+    });
+    let code = |s: Section| {
+        frames.iter().find_map(|f| match f {
+            Frame::Err { section, code, .. } if *section == s => Some(code.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(code(Section::Fw).as_deref(), Some("needs-sudo"));
+    assert_eq!(code(Section::F2b).as_deref(), Some("needs-sudo"));
+
+    // A wrong password: sudo refuses before bash starts, so no collector runs at all and
+    // nothing is emitted (the client verified the password just before launching).
+    let Some(mut r) = Run::start_priv("badpw", (1, 1, 1), "password", Some("wrong")) else {
+        return;
+    };
+    let status = r.child.wait().expect("wait");
+    assert!(!status.success());
+    assert!(
+        r.out.recv_timeout(Duration::from_secs(1)).is_err(),
+        "no output"
+    );
 }
 
 #[test]

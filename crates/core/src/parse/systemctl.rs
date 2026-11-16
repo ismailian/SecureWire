@@ -1,7 +1,7 @@
 use super::num;
 use crate::model::{ActiveState, ServiceInfo};
 
-/// `systemctl show -p Id,ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,TasksCurrent,
+/// `systemctl show -p Id,LoadState,ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,TasksCurrent,
 /// NRestarts,Result,ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic <units…>`
 ///
 /// Units are separated by blank lines. `uptime_s` (remote) turns monotonic
@@ -10,7 +10,15 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
     let mut out = Vec::new();
     let mut cur = ServiceInfo::default();
     let (mut active_enter, mut inactive_enter) = (0u64, 0u64);
-    let mut flush = |cur: &mut ServiceInfo, ae: &mut u64, ie: &mut u64| {
+    let mut not_found = false;
+    let mut flush = |cur: &mut ServiceInfo, ae: &mut u64, ie: &mut u64, nf: &mut bool| {
+        if std::mem::take(nf) {
+            cur.sub = "not-found".into();
+        }
+        // An alias (sshd.service → ssh.service) reports its canonical Id: show it once.
+        if !cur.id.is_empty() && out.iter().any(|s: &ServiceInfo| s.id == cur.id) {
+            *cur = ServiceInfo::default();
+        }
         if !cur.id.is_empty() {
             let mono = if matches!(cur.active, ActiveState::Active | ActiveState::Reloading) {
                 *ae
@@ -27,7 +35,12 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
     };
     for line in payload.lines() {
         if line.trim().is_empty() {
-            flush(&mut cur, &mut active_enter, &mut inactive_enter);
+            flush(
+                &mut cur,
+                &mut active_enter,
+                &mut inactive_enter,
+                &mut not_found,
+            );
             continue;
         }
         let Some((k, v)) = line.split_once('=') else {
@@ -35,6 +48,7 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
         };
         match k {
             "Id" => cur.id = v.to_owned(),
+            "LoadState" => not_found = v == "not-found",
             "ActiveState" => cur.active = ActiveState::parse(v),
             "SubState" => cur.sub = v.to_owned(),
             "MainPID" => cur.main_pid = num(v).unwrap_or(0),
@@ -48,7 +62,12 @@ pub fn parse_systemctl_show(payload: &str, uptime_s: f64) -> Vec<ServiceInfo> {
             _ => {}
         }
     }
-    flush(&mut cur, &mut active_enter, &mut inactive_enter);
+    flush(
+        &mut cur,
+        &mut active_enter,
+        &mut inactive_enter,
+        &mut not_found,
+    );
     out
 }
 
@@ -102,5 +121,31 @@ InactiveEnterTimestampMonotonic=99000000
         assert_eq!(v[1].cpu_ns, None);
         assert_eq!(v[1].nrestarts, 3);
         assert_eq!(v[1].state_age_s, Some(1));
+    }
+
+    // Seen on Ubuntu 26.04: watching both names of an alias, plus a unit that does not exist.
+    #[test]
+    fn aliases_once_and_not_found_flagged() {
+        let v = parse_systemctl_show(
+            "Id=ssh.service
+LoadState=loaded
+ActiveState=active
+SubState=running
+
+Id=ssh.service
+LoadState=loaded
+ActiveState=active
+SubState=running
+
+Id=nope.service
+LoadState=not-found
+ActiveState=inactive
+SubState=dead
+",
+            100.0,
+        );
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert_eq!(v[0].id, "ssh.service");
+        assert_eq!(v[1].sub, "not-found");
     }
 }

@@ -6,7 +6,7 @@ use sw_core::Section;
 use sw_core::format;
 use sw_ssh::api::SudoMode;
 
-use crate::state::{HostUi, HostView};
+use crate::state::{HostUi, HostView, Request};
 use crate::theme::tok::*;
 use crate::widgets::{self as w, right, section};
 
@@ -207,6 +207,7 @@ fn legend(ui: &mut Ui, c: egui::Color32, t: &str) {
 
 fn disk(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
     let over = v.mounts.iter().filter(|m| m.frac() >= 0.8).count();
+    let mut reqs = Vec::new();
     section(
         ui,
         open(hu, "disk"),
@@ -231,7 +232,17 @@ fn disk(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
                     ACC
                 };
                 ui.horizontal(|ui| {
-                    ui.label(w::mono(&m.mount, TX1)).on_hover_text(&m.fs);
+                    let r = ui
+                        .add(egui::Label::new(w::mono(&m.mount, TX1)).sense(egui::Sense::click()))
+                        .on_hover_text(format!(
+                            "{} · click: largest directories under {}",
+                            m.fs, m.mount
+                        ));
+                    if r.clicked() {
+                        reqs.push(Request::Run(sw_core::actions::Action::LargestDirs(
+                            m.mount.clone(),
+                        )));
+                    }
                     right(ui, |ui| {
                         ui.label(w::meta(format!(
                             "{} / {}",
@@ -267,9 +278,12 @@ fn disk(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
             }
         },
     );
+    hu.requests.extend(reqs);
 }
 
 fn network(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
+    let mut net_reqs = Vec::new();
+    let reqs = &mut net_reqs;
     let iface = v.net.as_ref().map(|n| n.iface.clone());
     section(
         ui,
@@ -300,35 +314,128 @@ fn network(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {
                 None,
             );
             ui.add_space(6.0);
-            ui.label(w::faint("LISTENING"));
-            if v.listeners.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(w::faint("LISTENING"));
+                right(ui, |ui| {
+                    if !v.listeners.is_empty()
+                        && ui
+                            .link(
+                                RichText::new(format!("All {} sockets…", v.listeners.len()))
+                                    .size(11.0),
+                            )
+                            .clicked()
+                    {
+                        reqs.push(Request::OpenPorts);
+                    }
+                });
+            });
+            if v.port_groups.is_empty() {
                 ui.label(w::faint("—"));
             }
             let fw = v
                 .firewall
                 .as_ref()
                 .filter(|f| f.active && matches!(f.incoming.as_str(), "deny" | "drop" | "reject"));
+            // One chip per port (not per address); local-only ports dimmed. The full
+            // table with processes and actions is one click away.
+            const MAX_CHIPS: usize = 12;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                for l in v.listeners.iter().take(24) {
-                    let name = if l.process.is_empty() {
-                        String::new()
+                for g in v.port_groups.iter().take(MAX_CHIPS) {
+                    let name = g.processes.split(", ").next().unwrap_or_default();
+                    let text = if name.is_empty() {
+                        g.port.to_string()
                     } else {
-                        format!(" {}", l.process)
+                        format!("{} {name}", g.port)
                     };
-                    let (text, color) = if !l.is_public() {
-                        (format!("{}:{}{name}", l.addr, l.port), TX3)
-                    } else if fw.is_some_and(|f| !f.allows_port(l.port)) {
-                        (format!("{}{name}", l.port), WARN)
+                    let color = if !g.public {
+                        TX3
+                    } else if fw.is_some_and(|f| !f.allows_port(g.port)) {
+                        WARN
                     } else {
-                        (format!("{}{name}", l.port), TX1)
+                        TX1
                     };
-                    w::chip(ui, &text, color)
-                        .on_hover_text(format!("{} {}:{}", l.proto, l.addr, l.port));
+                    let tip = format!(
+                        "{} {} · {}{}",
+                        g.protos,
+                        g.port,
+                        if g.public { "public" } else { "local only" },
+                        if g.processes.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", g.processes)
+                        }
+                    );
+                    if w::chip(ui, &text, color).on_hover_text(tip).clicked() {
+                        reqs.push(Request::OpenPorts);
+                    }
+                }
+                if v.port_groups.len() > MAX_CHIPS {
+                    let more = format!("+{}", v.port_groups.len() - MAX_CHIPS);
+                    if w::chip(ui, &more, TX2).clicked() {
+                        reqs.push(Request::OpenPorts);
+                    }
                 }
             });
+            if !v.tunnels.is_empty() {
+                ui.add_space(6.0);
+                ui.label(w::faint("TUNNELS"));
+                for t in &v.tunnels {
+                    tunnel_row(ui, t, reqs);
+                }
+            }
         },
     );
+    hu.requests.extend(std::mem::take(&mut net_reqs));
+}
+
+fn tunnel_row(ui: &mut Ui, t: &crate::state::TunnelView, reqs: &mut Vec<Request>) {
+    use sw_ssh::api::TunnelState;
+    ui.horizontal(|ui| match &t.state {
+        TunnelState::Listening { local_port: 0 } => {
+            w::dot(ui, TX3);
+            ui.label(w::faint(format!("{} {} · opening…", t.port, t.label)));
+        }
+        TunnelState::Listening { local_port } => {
+            w::dot(ui, OK);
+            let local = format!("127.0.0.1:{local_port}");
+            ui.label(w::mono(&local, TX0)).on_hover_text(format!(
+                "{local} → {}:{} on the server ({})",
+                t.host, t.port, t.label
+            ));
+            ui.label(w::faint(format!("→ {} {}", t.port, t.label)));
+            right(ui, |ui| {
+                if w::icon_button(ui, ph::X, "Close tunnel", false).clicked() {
+                    reqs.push(Request::CloseTunnel(t.id));
+                }
+                if w::icon_button(ui, ph::COPY, "Copy address", false).clicked() {
+                    ui.ctx().copy_text(local.clone());
+                }
+                if t.is_http()
+                    && w::icon_button(ui, ph::ARROW_SQUARE_OUT, "Open in browser", false).clicked()
+                {
+                    let scheme = if matches!(t.port, 443 | 8443 | 9443) {
+                        "https"
+                    } else {
+                        "http"
+                    };
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(format!("{scheme}://{local}/")));
+                }
+            });
+        }
+        TunnelState::Failed(e) => {
+            w::dot(ui, ERR);
+            ui.label(w::faint(format!("{} {}: {e}", t.port, t.label)))
+                .on_hover_text(e);
+            right(ui, |ui| {
+                if w::icon_button(ui, ph::X, "Dismiss", false).clicked() {
+                    reqs.push(Request::CloseTunnel(t.id));
+                }
+            });
+        }
+        TunnelState::Closed => {}
+    });
 }
 
 fn sessions(ui: &mut Ui, v: &HostView, hu: &mut HostUi) {

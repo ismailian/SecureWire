@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::Waker;
 use crate::api::{
     AuthSpec, Command, ConnInfo, ConnState, ConnectSpec, Event, EventKind, HostId, HostKeyStatus,
-    KeyDecision, LogKind, LogSourceInfo, PtyId, SudoMode, Throttle,
+    KeyDecision, LogKind, LogSourceInfo, PtyId, SudoMode, Throttle, TunnelState,
 };
 use crate::collector::{self, Priv};
 use crate::remote::{self, CollectorMsg};
@@ -64,7 +64,7 @@ impl Shared {
 struct KeyState {
     /// Key accepted during this host session ("once" or trusted). Reconnects
     /// accept exactly this key without asking again.
-    accepted: Option<PublicKey>,
+    accepted: Vec<(String, u16, PublicKey)>,
     /// Last key seen + whether it came from a known_hosts file.
     seen: Option<(String, String, bool)>,
 }
@@ -124,7 +124,13 @@ impl client::Handler for Client {
         let algorithm = key.algorithm().as_str().to_owned();
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
 
-        if self.keys.lock().accepted.as_ref() == Some(key) {
+        if self
+            .keys
+            .lock()
+            .accepted
+            .iter()
+            .any(|(h, p, k)| *h == self.host && *p == self.port && k == key)
+        {
             return Ok(true);
         }
 
@@ -138,7 +144,9 @@ impl client::Handler for Client {
             match check_file(f, &self.host, self.port, key) {
                 Known::Match => {
                     let mut k = self.keys.lock();
-                    k.accepted = Some(key.clone());
+                    k.accepted
+                        .retain(|(h, p, _)| !(*h == self.host && *p == self.port));
+                    k.accepted.push((self.host.clone(), self.port, key.clone()));
                     k.seen = Some((algorithm, fingerprint, true));
                     return Ok(true);
                 }
@@ -155,6 +163,11 @@ impl client::Handler for Client {
         while decisions.try_recv().is_ok() {}
         self.prompt.lock().active = true;
         self.shared.emit(EventKind::HostKeyPrompt {
+            host: if self.port == 22 {
+                self.host.clone()
+            } else {
+                format!("{}:{}", self.host, self.port)
+            },
             algorithm: algorithm.clone(),
             fingerprint: fingerprint.clone(),
             status: status.clone(),
@@ -189,7 +202,9 @@ impl client::Handler for Client {
                         .emit(EventKind::Error(format!("Could not save host key: {e}")));
                 }
                 let mut k = self.keys.lock();
-                k.accepted = Some(key.clone());
+                k.accepted
+                    .retain(|(h, p, _)| !(*h == self.host && *p == self.port));
+                k.accepted.push((self.host.clone(), self.port, key.clone()));
                 k.seen = Some((algorithm, fingerprint, decision == KeyDecision::Trust));
                 Ok(true)
             }
@@ -348,6 +363,11 @@ enum Internal {
         result: Result<remote::Writer, String>,
     },
     Discovered(Result<Vec<sw_core::logs::LogCandidate>, String>),
+    ActionDone {
+        id: u64,
+        refresh: Option<Section>,
+        result: Result<(String, Option<u32>), String>,
+    },
 }
 
 struct Pty {
@@ -402,6 +422,11 @@ pub(crate) struct Actor {
     watcher: Option<remote::Writer>,
     watcher_gen: u64,
     last_unit_now: Option<Instant>,
+    /// The jump host's connection while the target session runs through it.
+    jump_handle: Option<Handle<Client>>,
+    /// Current session for tunnel tasks (protocol §13); tunnels survive reconnects.
+    live: crate::tunnel::Live<Client>,
+    tunnels: HashMap<u64, crate::tunnel::Tunnel>,
     // ---- M4: log channels (protocol §6) ----
     log_sources: Vec<sw_core::config::LogSourceConfig>,
     log_backlog: u32,
@@ -456,6 +481,9 @@ impl Actor {
             watcher: None,
             watcher_gen: 0,
             last_unit_now: None,
+            jump_handle: None,
+            live: Arc::default(),
+            tunnels: HashMap::new(),
             log_sources: Vec::new(),
             log_backlog: 200,
             log_writers: Vec::new(),
@@ -472,6 +500,33 @@ impl Actor {
     /// Handle commands that mean the same in every state; returns the rest.
     fn absorb(&mut self, c: Command) -> Option<Command> {
         match c {
+            // Tunnels work the same online and offline (the listener is local).
+            Command::OpenTunnel {
+                id,
+                host,
+                port,
+                local_port,
+            } => {
+                let state = match crate::tunnel::open(self.live.clone(), &host, port, local_port) {
+                    Ok(t) => {
+                        let local_port = t.local_port;
+                        self.tunnels.insert(id, t);
+                        TunnelState::Listening { local_port }
+                    }
+                    Err(e) => TunnelState::Failed(e),
+                };
+                self.emit(EventKind::Tunnel { id, state });
+                None
+            }
+            Command::CloseTunnel(id) => {
+                if self.tunnels.remove(&id).is_some() {
+                    self.emit(EventKind::Tunnel {
+                        id,
+                        state: TunnelState::Closed,
+                    });
+                }
+                None
+            }
             Command::OpenPty { pty, term } => {
                 self.ptys.insert(
                     pty,
@@ -518,6 +573,15 @@ impl Actor {
                 None
             }
             Command::DiscoverLogs => None,
+            Command::RunAction { id, .. } => {
+                self.emit(EventKind::ActionResult {
+                    id,
+                    ok: false,
+                    exit: None,
+                    output: "Not connected".into(),
+                });
+                None
+            }
             Command::Now(_)
             | Command::PtyInput { .. }
             | Command::PtyResize { .. }
@@ -633,32 +697,73 @@ impl Actor {
         true
     }
 
+    /// Connect (directly or through a jump host), verify host keys, authenticate.
     async fn connect(
         &mut self,
         refused: Arc<AtomicBool>,
     ) -> Result<Option<Handle<Client>>, ConnectError> {
-        let config = Arc::new(client::Config {
-            keepalive_interval: Some(Duration::from_secs(15)),
-            keepalive_max: 3,
-            nodelay: true,
-            ..Default::default()
-        });
-        let timeout = self.spec.connect_timeout;
-        let prompt = Arc::new(parking_lot::Mutex::new(PromptClock::default()));
-        let handler = Client {
-            shared: self.shared.clone(),
-            host: self.spec.address.clone(),
-            port: self.spec.port,
-            known_hosts: self.spec.known_hosts.clone(),
-            decisions: self.decisions.clone(),
-            keys: self.keys.clone(),
-            key_refused: refused.clone(),
-            prompt: prompt.clone(),
+        let (address, port) = (self.spec.address.clone(), self.spec.port);
+        let mut handle = if let Some(j) = self.spec.jump.clone() {
+            // 1. The jump host: its own TCP connection, host key and credentials.
+            let Some(sock) = self.tcp(&j.address, j.port).await? else {
+                return Ok(None);
+            };
+            let Some(mut jh) = self
+                .handshake(sock, &j.address, j.port, refused.clone())
+                .await?
+            else {
+                return Ok(None);
+            };
+            self.emit(EventKind::State(ConnState::Authenticating));
+            authenticate(&mut jh, &j.user, &j.auth)
+                .await
+                .map_err(|e| ConnectError::Other(format!("Jump host {}: {e}", j.address)))?;
+            // 2. A direct-tcpip channel to the target; the target's SSH session runs inside it.
+            let ch = jh
+                .channel_open_direct_tcpip(address.clone(), port as u32, "127.0.0.1", 0)
+                .await
+                .map_err(|e| {
+                    ConnectError::Other(format!(
+                        "Jump host {} could not reach {address}:{port}: {e}",
+                        j.address
+                    ))
+                })?;
+            let Some(h) = self
+                .handshake(ch.into_stream(), &address, port, refused)
+                .await?
+            else {
+                return Ok(None);
+            };
+            self.jump_handle = Some(jh);
+            h
+        } else {
+            let Some(sock) = self.tcp(&address, port).await? else {
+                return Ok(None);
+            };
+            let Some(h) = self.handshake(sock, &address, port, refused).await? else {
+                return Ok(None);
+            };
+            h
         };
-        let addr = (self.spec.address.clone(), self.spec.port);
+        self.emit(EventKind::State(ConnState::Authenticating));
+        let (user, auth) = (self.spec.user.clone(), self.spec.auth.clone());
+        authenticate(&mut handle, &user, &auth)
+            .await
+            .map_err(ConnectError::Auth)?;
+        Ok(Some(handle))
+    }
 
-        // 1. TCP connect, bounded.
-        let tcp = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr));
+    /// TCP connect bounded by `connect_timeout`, still serving commands. `None` = shutdown.
+    async fn tcp(
+        &mut self,
+        address: &str,
+        port: u16,
+    ) -> Result<Option<tokio::net::TcpStream>, ConnectError> {
+        let timeout = self.spec.connect_timeout;
+        let tcp = tokio::time::timeout(
+            timeout,
+            tokio::net::TcpStream::connect((address.to_owned(), port)),
+        );
         tokio::pin!(tcp);
         let sock = loop {
             tokio::select! {
@@ -670,21 +775,52 @@ impl Actor {
                 },
             }
         };
-        let sock = match sock {
-            Err(_) => {
-                return Err(ConnectError::Other(format!(
-                    "Timed out after {}s",
-                    timeout.as_secs()
-                )));
+        match sock {
+            Err(_) => Err(ConnectError::Other(format!(
+                "{address}:{port}: timed out after {}s",
+                timeout.as_secs()
+            ))),
+            Ok(Err(e)) => Err(ConnectError::Other(format!(
+                "{address}:{port}: network error: {e}"
+            ))),
+            Ok(Ok(s)) => {
+                let _ = s.set_nodelay(true);
+                Ok(Some(s))
             }
-            Ok(Err(e)) => return Err(ConnectError::Other(format!("Network error: {e}"))),
-            Ok(Ok(s)) => s,
-        };
-        let _ = sock.set_nodelay(true);
+        }
+    }
 
-        // 2. SSH handshake. The idle deadline never counts time the user spends
-        //    reading a host-key prompt (it re-arms while one is open or just closed).
-        let hs = client::connect_stream(config, sock, handler);
+    /// SSH handshake over any stream. The idle deadline never counts time the user
+    /// spends reading a host-key prompt (it re-arms while one is open or just closed).
+    async fn handshake<S>(
+        &mut self,
+        stream: S,
+        host: &str,
+        port: u16,
+        refused: Arc<AtomicBool>,
+    ) -> Result<Option<Handle<Client>>, ConnectError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(Duration::from_secs(15)),
+            keepalive_max: 3,
+            nodelay: true,
+            ..Default::default()
+        });
+        let timeout = self.spec.connect_timeout;
+        let prompt = Arc::new(parking_lot::Mutex::new(PromptClock::default()));
+        let handler = Client {
+            shared: self.shared.clone(),
+            host: host.to_owned(),
+            port,
+            known_hosts: self.spec.known_hosts.clone(),
+            decisions: self.decisions.clone(),
+            keys: self.keys.clone(),
+            key_refused: refused.clone(),
+            prompt: prompt.clone(),
+        };
+        let hs = client::connect_stream(config, stream, handler);
         tokio::pin!(hs);
         let mut deadline = tokio::time::Instant::now() + timeout;
         let result = loop {
@@ -697,7 +833,7 @@ impl Actor {
                     } else if let Some(t) = p.ended.filter(|t| t.elapsed() < timeout) {
                         deadline = tokio::time::Instant::from_std(t + timeout);
                     } else {
-                        return Err(ConnectError::Other("Timed out during the SSH handshake".into()));
+                        return Err(ConnectError::Other(format!("{host}: timed out during the SSH handshake")));
                     }
                 }
                 c = self.rx.recv() => match c.and_then(|c| self.absorb(c)) {
@@ -707,24 +843,59 @@ impl Actor {
                 },
             }
         };
-        let mut handle = match result {
-            Ok(h) => h,
+        match result {
+            Ok(h) => Ok(Some(h)),
             Err(e) if refused.load(Ordering::SeqCst) => {
-                return Err(ConnectError::Other(format!("Host key not accepted ({e})")));
+                Err(ConnectError::Other(format!("Host key not accepted ({e})")))
             }
             Err(russh::Error::IO(e)) => {
-                return Err(ConnectError::Other(format!("Network error: {e}")));
+                Err(ConnectError::Other(format!("{host}: network error: {e}")))
             }
-            Err(e) => return Err(ConnectError::Other(e.to_string())),
-        };
+            Err(e) => Err(ConnectError::Other(e.to_string())),
+        }
+    }
 
-        self.emit(EventKind::State(ConnState::Authenticating));
-        let user = self.spec.user.clone();
-        let auth = self.spec.auth.clone();
-        authenticate(&mut handle, &user, &auth)
-            .await
-            .map_err(ConnectError::Auth)?;
-        Ok(Some(handle))
+    /// Run a server action (protocol §7) on its own channel; the result comes back as an event.
+    fn run_action(&self, id: u64, action: sw_core::actions::Action) {
+        let reply = |ok: bool, exit: Option<u32>, output: String| {
+            self.emit(EventKind::ActionResult {
+                id,
+                ok,
+                exit,
+                output,
+            });
+        };
+        let full = match collector::action_line(&action, self.sudo_mode) {
+            Ok(c) => c,
+            Err(e) => return reply(false, None, e),
+        };
+        let Some(h) = self.handle.clone() else {
+            return reply(false, None, "Not connected".into());
+        };
+        let p = Priv::from_sudo(self.sudo_mode);
+        let secret = if p == Priv::Password {
+            self.sudo_password.clone()
+        } else {
+            None
+        };
+        let tx = self.internal_tx.clone();
+        let refresh = action.refreshes();
+        tokio::spawn(async move {
+            let r = remote::run_exec(
+                &h,
+                &full,
+                None,
+                secret.as_ref(),
+                Duration::from_secs(120),
+                256 * 1024,
+            )
+            .await;
+            let _ = tx.send(Internal::ActionDone {
+                id,
+                refresh,
+                result: r,
+            });
+        });
     }
 
     async fn open_pty(&mut self, handle: &Handle<Client>, pty: PtyId) -> Result<(), String> {
@@ -781,6 +952,7 @@ impl Actor {
     async fn session(&mut self, handle: Handle<Client>) -> End {
         let handle = Arc::new(handle);
         self.handle = Some(handle.clone());
+        *self.live.lock() = Some(handle.clone());
         let (algorithm, fingerprint, key_known) = self.keys.lock().seen.clone().unwrap_or_default();
         self.emit(EventKind::Connected(ConnInfo {
             user: self.spec.user.clone(),
@@ -870,6 +1042,10 @@ impl Actor {
                             self.start_logs(false).await;
                         }
                         Command::DiscoverLogs => self.discover_logs(),
+                        Command::RunAction { id, action } => self.run_action(id, action),
+                        c @ (Command::OpenTunnel { .. } | Command::CloseTunnel(_)) => {
+                            self.absorb(c);
+                        }
                         Command::SudoPassword(Some(pw)) => self.check_sudo(&handle, pw),
                         Command::SudoPassword(None) => {
                             self.sudo_skipped = true;
@@ -939,6 +1115,16 @@ impl Actor {
                         }
                     }
                     Some(Internal::Discovered(Ok(c))) => self.emit(EventKind::LogCandidates(c)),
+                    Some(Internal::ActionDone { id, refresh, result }) => {
+                        let (ok, exit, output) = match result {
+                            Ok((out, status)) => (status == Some(0), status, out),
+                            Err(e) => (false, None, e),
+                        };
+                        if ok && let Some(s) = refresh {
+                            self.coll_line(&collector::now(s)).await;
+                        }
+                        self.emit(EventKind::ActionResult { id, ok, exit, output });
+                    }
                     Some(Internal::Discovered(Err(e))) => self.emit(EventKind::Error(format!("Log discovery failed: {e}"))),
                     Some(Internal::Units(Err(e))) => self.emit(EventKind::Error(format!("Could not list units: {e}"))),
                     Some(Internal::CollectorStarted { generation, result }) => {
@@ -1113,7 +1299,8 @@ impl Actor {
                 });
             }
             ServiceMode::Live => {
-                self.coll_line(&collector::every(Section::Svc, 0)).await;
+                // State changes are pushed by the watcher; memory/CPU figures refresh every 30 s.
+                self.coll_line(&collector::every(Section::Svc, 30)).await;
                 let Some(h) = self.handle.clone() else { return };
                 let journal_ok = self.probe.as_ref().is_some_and(|p| p.journal_read);
                 let (prefix, secret) = match (journal_ok, self.sudo_mode) {
@@ -1410,7 +1597,9 @@ impl Actor {
         self.watcher_gen += 1;
         self.log_writers.clear();
         self.log_gen += 1;
+        self.jump_handle = None;
         self.handle = None;
+        *self.live.lock() = None;
         self.link.rtt_ms = None;
         self.link.overhead_bps = 0.0;
         self.emit_link();

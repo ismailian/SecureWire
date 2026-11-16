@@ -77,6 +77,10 @@ pub fn parse_cpu_frame(payload: &str) -> Option<CpuFrame> {
                 for (i, v) in rest.iter().take(3).enumerate() {
                     f.load[i] = num(v).unwrap_or(0.0);
                 }
+                // "1/345": running/total (the collector no longer reads /proc/stat past the cpu lines).
+                if let Some(r) = rest.get(3).and_then(|s| s.split('/').next()).and_then(num) {
+                    f.procs_running = r;
+                }
             }
             "procs_running" => f.procs_running = rest.first().and_then(|s| num(s)).unwrap_or(0),
             k if k.starts_with("cpu") && k[3..].bytes().all(|b| b.is_ascii_digit()) => {

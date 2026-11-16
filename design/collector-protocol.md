@@ -215,6 +215,7 @@ Destructive actions (stop, restart, ban, firewall change) always show a confirma
 |---|---|
 | Collector traffic | < 1 KB/s (fast tier dominates: ~1.5 KB per 2 s on a 4-core box before SSH compression) |
 | Server CPU for the collector | < 0.1 % of one core (fast tier forks nothing) |
+| *Measured (M5, 2-vCPU VirtualBox VM, Ubuntu 26.04)* | fast tier 2.25 ms/s; svc 18 ms per poll; who 12 ms; ports 26 ms; fail2ban-client ~400 ms per refresh (see §14) |
 | Server processes added | 1 `bash` + 1 `journalctl` + 1 `tail` (+ 1 `sudo tail` when privileged logs are enabled) |
 | Client parse cost | < 50 µs per fast frame |
 
@@ -239,11 +240,7 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 
 ### How each channel gets the password
 - **One-shot actions & `$SUDO tail -F` log channel:** exec `sudo -S -p "" <cmd>`, then write `password\n` to the channel's stdin. The command itself never reads stdin, so nothing else is needed.
-- **Collector:** (M3, when the first privileged section exists — M2 sections need no privilege, so the collector is not given the password at all) the password is the first stdin line after the script; `main` reads it with `IFS= read -r SWPW` before control commands start. Privileged sections call a helper that pipes the variable through a **builtin** `printf`, so the password never appears in any process's argv or environment:
-  ```bash
-  sudo_run() { printf "%s\n" "$SWPW" | sudo -S -p "" "$@" 2>&1; }
-  ```
-  `SWPW` is never exported. Modes `root`/`nopasswd` define `sudo_run` without the pipe.
+- **Collector (D-029, M5):** the whole collector runs under **one** sudo for the session: `exec sudo -S -p "" -- bash -s securewire-collector F M S root`. The client writes the password line first (read by `sudo -S`, unbuffered in both sudo and sudo-rs), then the script (read by bash). Privileged sections then run as root without calling sudo again — one auth-log entry per session instead of one per section per tick, and no PAM cost per tick. NOPASSWD hosts use `exec sudo -n -- bash -s … root`. Verified on Ubuntu 26.04 with sudo-rs 0.2.13.
 - **`requiretty=1` hosts:** privileged commands run on a dedicated PTY channel (no echo, prompt `-p ""`), driven by the actor; the collector delegates privileged sections to the actor (`␞NEED <section>`) instead of running them itself.
 
 ### Rules
@@ -261,6 +258,7 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 
 ## 11. Implementation notes (M3)
 
+- *(Superseded in M5 by D-029 — see §9: the collector now runs under one sudo and gets `root`.)*
 - **Launch:** `exec bash -s securewire-collector F M S PRIV` — `PRIV` is `none|root|nopasswd|password`. With `password`, the first stdin line after the script is the sudo password; `main` reads it before anything else. `sudo_run` pipes it from a builtin `printf` into `sudo -S -p ""`. The actor relaunches the collector whenever the privilege changes (e.g. the user enters the sudo password after connecting).
 - **`EVERY <section> <secs>`** sets a per-section interval (0 = back to its tier). Used for the service status modes: Live = medium tier (10 s, resources) + unit watcher; Poll = `EVERY svc <poll_secs>`; Manual = the app turns `svc` OFF and sends `NOW svc` on demand.
 - **ERR codes:** `needs-sudo` (no privilege), `unavailable` (tool missing or sudo refused), `missing` (tool not installed), `unreadable`.
@@ -278,3 +276,33 @@ Enable SSH compression (`zlib@openssh.com`) when RTT > 80 ms; leave it off on fa
 - **Reconnect:** the journal resumes with `--after-cursor=<last cursor>`; files restart with `-n 0` (lines written while disconnected are not replayed).
 - **Settings per host** (`hosts.toml`): `[[host.logs]]` sources, `log_backlog` (50/200/1000), `log_cap` (2k/10k/50k lines kept in memory).
 - **Measured:** `securewire --bench-ui` (demo host, 50 lines/s, 20 s, release build on Windows): p50 1.00 ms, p95 1.48 ms, p99 1.82 ms, max 3.92 ms per frame — budget < 4 ms.
+
+## 13. Tunnels (one-click port forwarding, M5)
+
+"Tunnel" on a listening socket (sockets table, service menu, palette) forwards a port of the server to this computer:
+
+- The client binds **127.0.0.1** only — never a wildcard address. It tries the same port number first (unprivileged, or any on Windows), then port + 10000, then any free port.
+- Each accepted local connection opens a `direct-tcpip` channel on the host's **existing** SSH connection to the socket's address as seen from the server (`0.0.0.0` → `127.0.0.1`, `::` → `::1`, else the bound address). No second TCP connection; nothing runs on the server.
+- The target must be an IP literal from `ss` output; anything else is refused before binding.
+- Tunnels survive reconnects: every new local connection uses the current session; while offline, local connections are closed at once. Closing the tunnel releases the local port.
+- UDP sockets can't be tunnelled (`direct-tcpip` is TCP only).
+
+## 14. Implementation notes (M5 — measured on a real host)
+
+Per-emission server CPU, then steady state per group, on a 2-vCPU VirtualBox VM (Ubuntu 26.04, bash 5.3, sudo-rs):
+
+| Section | ms CPU per emission | Tier / interval (after M5) |
+|---|---|---|
+| cpu, mem, net, dio | ~2 each (8 per fast tick before `mapfile`) | fast, 2 s — 2.25 ms/s together |
+| svc | 12–18 | 10 s in Poll mode; **30 s** in Live mode (state changes are pushed) |
+| who | ~12 | **every 30 s** |
+| df | 2–6 | **slow** (60 s) |
+| ports (`ss -p` as root) | 20–26 | slow |
+| fw | 4–10 | slow |
+| f2b (`fail2ban-client`, Python) | ~400 | slow, but only re-run when `/var/lib/fail2ban/fail2ban.sqlite3` changed (`find -newermt`), on `NOW`, or every 10 min; otherwise `SAME` |
+| auth | ~30 | every 300 s |
+
+- Fast-tier readers use `mapfile` (a few syscalls per file) instead of `while read` (a read+lseek pair per line); `/proc/stat` is read only up to the last `cpuN` line (the `intr` line is huge). `procs_running` now comes from `/proc/loadavg`'s 4th field.
+- `svc` asks for `LoadState`: a watched unit that doesn't exist shows "unit not found" instead of "dead"; an alias (`sshd.service` → `ssh.service`) is shown once.
+- Before M5 the collector called `sudo` per privileged section per tick: on a real host each call wrote 3 auth-log lines (command + PAM open/close). D-029 removed that.
+- Result: ~0.4 % of one core in steady state with the default visible sections, down from ~1.4 %. The < 0.1 % target in §8 is **not** met at a 2 s fast tier on this VM; the fast tier alone is ~0.23 %.

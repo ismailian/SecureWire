@@ -484,7 +484,7 @@ table.t td.r,table.t th.r{text-align:right}
               <div class="acts"><button class="ibtn"><i class="ph ph-arrow-clockwise"></i></button><button class="ibtn"><i class="ph ph-scroll"></i></button><button class="ibtn"><i class="ph ph-stop"></i></button></div></div>
             <div class="svc"><span class="dot off"></span><div><div class="nm">certbot.timer</div><div class="st">waiting · next in 6h 12m</div></div><div class="r">timer</div>
               <div class="acts"><button class="ibtn" title="Run now"><i class="ph ph-play"></i></button><button class="ibtn"><i class="ph ph-scroll"></i></button></div></div>
-            <div class="note" id="svcNote"><span class="dot ok pulse"></span>Live · state changes pushed by systemd · resources every 10s</div>
+            <div class="note" id="svcNote"><span class="dot ok pulse"></span>Live · state changes pushed by systemd · resources every 30s</div>
           </div>
         </section>
 
@@ -676,7 +676,7 @@ let mode='live';
 $('#liveSw').addEventListener('click',()=>{
   const on=!$('#liveSw').classList.contains('on'); $('#liveSw').classList.toggle('on',on);
   $('#liveLbl').textContent=on?'Live':'Off';
-  $('#svcNote').innerHTML=on?'<span class="dot ok pulse"></span>Live · state changes pushed by systemd · resources every 10s'
+  $('#svcNote').innerHTML=on?'<span class="dot ok pulse"></span>Live · state changes pushed by systemd · resources every 30s'
     :'<i class="ph ph-clock"></i><span>Checked 12s ago · <a href="#" class="acc" onclick="toast(\'Services refreshed (1 round-trip)\');return false">refresh</a> · updates on expand/focus</span>';
 });
 
