@@ -14,6 +14,11 @@ mod widgets;
 fn main() -> eframe::Result {
     // `--demo`: a fake host fed through the real parsers, no network (UI work, screenshots).
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        // Release builds on Windows have no console: visible when piped (`securewire --version | more`).
+        println!("securewire {}", theme::VERSION);
+        return Ok(());
+    }
     let demo = args.iter().any(|a| a == "--demo");
     // `--bench-ui[=report.txt]`: UI frame-time benchmark under a 50 lines/s log stream.
     let bench = args.iter().find_map(|a| {
@@ -29,6 +34,7 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title("SecureWire")
+            .with_icon(eframe::icon_data::from_png_bytes(theme::ICON_PNG).unwrap_or_default())
             // IDE-style: first launch maximized; eframe persistence restores the size afterwards.
             .with_inner_size([1280.0, 800.0])
             .with_maximized(true)

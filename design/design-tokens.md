@@ -64,7 +64,7 @@ Foreground `#c9d1d9`, background `bg-0`, cursor `acc`, selection `acc-dim`.
 | Mono (names, paths, IPs, logs, tables) | JetBrains Mono | 12 | Regular |
 | Terminal | JetBrains Mono | 13 (user-configurable) | Regular / Bold |
 
-- Both fonts are embedded (`include_bytes!`), subsetted to Latin + Latin-1 + box drawing + arrows to keep the binary small. egui's default emoji font stays as fallback.
+- JetBrains Mono NL Regular is embedded (`include_bytes!`, full font, ~200 KB; license in `crates/app/assets/fonts/OFL.txt`). Inter is not embedded yet: the UI uses egui's default proportional font until it is. egui's default fonts stay as fallback.
 - egui has no letter-spacing: uppercase titles get spacing by using `RichText::small().strong()` only — accept the difference from the mock.
 - Numbers that update must use tabular figures: Inter's `tnum` is not selectable in egui, so updating numbers in the UI use **JetBrains Mono** when alignment matters (tables, status bar), Inter elsewhere.
 

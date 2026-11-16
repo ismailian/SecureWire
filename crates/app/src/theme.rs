@@ -93,6 +93,19 @@ pub fn visuals() -> Visuals {
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    // JetBrains Mono (NL: no ligatures, which egui would not shape anyway) for mono text and the
+    // terminal: box drawing, arrows and tabular digits. egui's Hack stays behind it as a fallback.
+    fonts.font_data.insert(
+        "jetbrains-mono".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/JetBrainsMonoNL-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "jetbrains-mono".into());
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // Icons must also resolve inside monospace text (log toolbar, tables).
     fonts
@@ -121,7 +134,50 @@ pub fn install(ctx: &egui::Context) {
         s.interaction.selectable_labels = false;
         s.animation_time = 0.08;
     });
+    load_logos(ctx);
 }
+
+/// Window / taskbar icon (Linux and Windows; macOS uses the bundle's icon).
+pub const ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-256.png");
+const LOGO_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-128.png");
+const LOGO_SMALL_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-small-64.png");
+
+fn logo_id(small: bool) -> egui::Id {
+    egui::Id::new(("securewire-logo", small))
+}
+
+/// Decodes the two logo PNGs once at startup into textures kept in egui memory.
+fn load_logos(ctx: &egui::Context) {
+    for (small, png) in [(false, LOGO_PNG), (true, LOGO_SMALL_PNG)] {
+        let Ok(icon) = eframe::icon_data::from_png_bytes(png) else {
+            continue;
+        };
+        let size = [icon.width as usize, icon.height as usize];
+        let img = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
+        let opts = egui::TextureOptions {
+            mipmap_mode: Some(egui::TextureFilter::Linear),
+            ..egui::TextureOptions::LINEAR
+        };
+        let tex = ctx.load_texture(if small { "logo-small" } else { "logo" }, img, opts);
+        ctx.data_mut(|d| d.insert_temp(logo_id(small), tex));
+    }
+}
+
+/// The SecureWire logo at `size` points; the small variant (no wire) reads better under 32 px.
+pub fn logo(ui: &mut egui::Ui, size: f32) -> egui::Response {
+    let small = size < 32.0;
+    let tex: Option<egui::TextureHandle> = ui.ctx().data(|d| d.get_temp(logo_id(small)));
+    let size = egui::vec2(size, size);
+    match tex {
+        Some(t) => ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(
+            t.id(),
+            size,
+        ))),
+        None => ui.allocate_exact_size(size, egui::Sense::hover()).1,
+    }
+}
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn mono(size: f32) -> FontId {
     FontId::monospace(size)

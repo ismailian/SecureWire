@@ -214,7 +214,7 @@ Destructive actions (stop, restart, ban, firewall change) always show a confirma
 | | Target |
 |---|---|
 | Collector traffic | < 1 KB/s (fast tier dominates: ~1.5 KB per 2 s on a 4-core box before SSH compression) |
-| Server CPU for the collector | < 0.1 % of one core (fast tier forks nothing) |
+| Server CPU for the collector | < 0.5 % of one core in steady state with the default sections (D-034; the original 0.1 % guess was not reachable at a 2 s fast tier) |
 | *Measured (M5, 2-vCPU VirtualBox VM, Ubuntu 26.04)* | fast tier 2.25 ms/s; svc 18 ms per poll; who 12 ms; ports 26 ms; fail2ban-client ~400 ms per refresh (see §14) |
 | Server processes added | 1 `bash` + 1 `journalctl` + 1 `tail` (+ 1 `sudo tail` when privileged logs are enabled) |
 | Client parse cost | < 50 µs per fast frame |
@@ -305,4 +305,4 @@ Per-emission server CPU, then steady state per group, on a 2-vCPU VirtualBox VM 
 - Fast-tier readers use `mapfile` (a few syscalls per file) instead of `while read` (a read+lseek pair per line); `/proc/stat` is read only up to the last `cpuN` line (the `intr` line is huge). `procs_running` now comes from `/proc/loadavg`'s 4th field.
 - `svc` asks for `LoadState`: a watched unit that doesn't exist shows "unit not found" instead of "dead"; an alias (`sshd.service` → `ssh.service`) is shown once.
 - Before M5 the collector called `sudo` per privileged section per tick: on a real host each call wrote 3 auth-log lines (command + PAM open/close). D-029 removed that.
-- Result, steady state with the default visible sections (120 s windows): **0.28 % of one core** with services in Live mode, **0.47 %** in Poll-every-10 s mode — down from ~1.4 % before M5. The < 0.1 % target in §8 is **not** met at a 2 s fast tier on this VM; the fast tier alone is ~0.23 %. Release binary 11.5 MB.
+- Result, steady state with the default visible sections (120 s windows): **0.28 % of one core** with services in Live mode, **0.47 %** in Poll-every-10 s mode — down from ~1.4 % before M5. The original < 0.1 % target was not reachable at a 2 s fast tier on this VM (the fast tier alone is ~0.23 %), so §8 now says < 0.5 % (D-034). Release binary 11.5 MB.

@@ -57,7 +57,7 @@ Panel visibility, sizes, collapsed sections, active bottom tab and log filters p
 ### 3.1 Top bar
 | Element | Behaviour |
 |---|---|
-| Brand | Glyph + "SecureWire". Not interactive. |
+| Brand | Logo (small variant, 20 px) + "SecureWire". Hover shows the version. Not otherwise interactive. |
 | Host tabs | One per open host. Status dot = worst current state (green ok · amber warning · red error · gray disconnected). Hover shows `user@host:port` and the reason for the color. Middle-click / × closes (asks if terminals are running). Drag to reorder. |
 | `+` | Opens **Connect** dialog. |
 | Command palette | `Ctrl Shift P`. Fuzzy over: actions (restart service, tail file, largest dirs, who's on port, ban IP, new terminal), hosts, services, log sources. Actions that need input open a small parameter prompt in the palette itself. |

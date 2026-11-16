@@ -3,9 +3,9 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** M5 done (2026-11-16) — actions with confirmation (services, kill, ban/unban, largest dirs, who's on port), command palette with parameter prompts, `~/.ssh/config` import, ProxyJump, Ctrl 1…9, one-click tunnels over the same connection, listening-sockets table, Traffic tab (nginx/apache access logs) and IP menus. **First real-host check** (Ubuntu 26.04 VM, sudo-rs): probe, sudo, every section, Live services, logs, actions, vi/htop all work; the collector now runs under one sudo per session (D-029). M0–M4 are live. Next: M6 (CI, perf pass, packaging).
+**Status:** **v1.0.0** — M0–M6 done (2026-11-16). M6 added the logo, version info, bundled JetBrains Mono, CI (Linux, Windows, real sshd + sudo) and release packages: Windows Inno Setup installer + portable zip, Linux .deb / AppImage / tar.gz, macOS .dmg / tar.gz (D-035). The collector CPU budget is now 0.5 % of one core (D-034). M5 brought actions with confirmation, the command palette, `~/.ssh/config` import, ProxyJump, tunnels, the sockets table, the Traffic tab and IP menus; the collector runs under one sudo per session (D-029).
 
-Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB. M5 real host (2-vCPU VM): collector 0.28 % of one core in steady state with Live services, 0.47 % with 10 s polling (budget 0.1 % not met — the 2 s fast tier alone is 0.23 %, protocol §14), monitoring traffic ~640 B/s, RTT 1–2 ms. Client (release, M6 pass): idle CPU 0.70 % focused on that host (~1 repaint/s), private memory 50 MB, first window 151 ms, `--bench-ui` p99 1.92 ms, binary 11.5 MB.
+Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB. M5 real host (2-vCPU VM): collector 0.28 % of one core in steady state with Live services, 0.47 % with 10 s polling (within the revised 0.5 % budget, D-034; the 2 s fast tier alone is 0.23 %, protocol §14), monitoring traffic ~640 B/s, RTT 1–2 ms. Client (release, M6 pass): idle CPU 0.70 % focused on that host (~1 repaint/s), private memory 50 MB, first window 151 ms, `--bench-ui` p99 1.92 ms, binary 11.5 MB.
 
 ---
 
@@ -104,6 +104,8 @@ crates/
   term/  securewire-term (lib sw_term) — Terminal (alacritty_terminal + VT parser behind a FairMutex),
                            # TerminalView egui widget (renderer, keys, mouse, selection, clipboard), input.rs (xterm key encoding)
 collector/             # collector.sh (bash), probe.sh (POSIX sh) — embedded with include_str!; collector ends with `main "$@"`
+packaging/                 # icons/ (securewire.svg + small variant → PNGs + .ico, committed), securewire.desktop, windows/ (Inno Setup .iss + build-installer.ps1), macos/Info.plist
+LICENSE-MIT, LICENSE-APACHE
 design/                    # see §1
 ```
 
@@ -154,7 +156,7 @@ Add a dependency only when it removes real code; prefer std. Check `cargo tree -
 | Frame time (UI) with log stream at 50 lines/s | < 4 ms |
 | Cold start to first frame | < 300 ms |
 | Monitoring traffic | < 1 KB/s per host |
-| Server-side collector CPU | < 0.1 % of one core |
+| Server-side collector CPU | < 0.5 % of one core, steady state, default sections (D-034) |
 | Release binary | < 15 MB |
 
 Memory caps: log store per host bounded (default 10k lines, configurable 2k–50k); metric history 30 min per series (`RingBuffer<f32>`, 900 points); terminal scrollback 10k lines.
@@ -249,7 +251,7 @@ SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_ho
 - **Frame decoder**: fuzz-style tests for partial reads, frames split across packets, missing `END`, `SAME`, `ERR`.
 - **Collector script**: runs for real under a local bash against a fake host (`tests/collector.rs`): every section parses, rates are right, OFF/NOW/TIER/SVC/PING/QUIT, garbage and injection attempts ignored, EOF ends it, missing `/proc` files give `ERR`. A unit test asserts the script ends with the `main` call. shellcheck runs in CI.
 - **CI** (`.github/workflows/ci.yml`): Linux (shellcheck, fmt, clippy, tests with real bash + /proc), Windows (tests under Git Bash), and **real-sshd**: OpenSSH + a password user in the sudo group on the runner, then `examples/real_host.rs` with `SW_REAL_STRICT=1` (probe, sudo, every section, logs, actions, PTY must all work).
-- **Release** (`.github/workflows/release.yml`): tag `v*` → Windows zip, Linux tar.gz + .deb (`cargo deb`), macOS tar.gz, SHA256SUMS, attached to a **draft** release.
+- **Release** (`.github/workflows/release.yml`): tag `v*` (must equal the Cargo.toml version) → Windows Inno Setup installer + portable zip, Linux tar.gz + .deb (`cargo deb`) + AppImage, macOS .dmg (ad-hoc signed `SecureWire.app`) + tar.gz, SHA256SUMS, attached to a **draft** release. "Run workflow" builds the same packages as artifacts without a release. Locally: `cargo build --release -p securewire` then `packaging/windows/build-installer.ps1` → `dist/`.
 - **Command building**: every action template tested with hostile inputs (spaces, quotes, `;`, `$()`, newlines) — must be rejected or safely quoted.
 - **Demo mode** (`--demo`) replays recorded frames and log lines; use it for UI work and screenshots instead of a live server.
 - **Perf**: `securewire --bench-ui[=report.txt]` runs the demo host at 50 log lines/s for 20 s, writes frame-time percentiles and exits (window must be visible). `SW_FRAME_STATS=<file>` logs repaints per 10 s.
@@ -267,12 +269,12 @@ SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_ho
 
 | | Scope | Done when |
 |---|---|---|
-| **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. Open: Inter + JetBrains Mono not embedded yet (egui default fonts in use) |
+| **M0** ✅ | Workspace scaffold, build settings, theme + icons, full panel layout with demo data through the real decoder/parsers | Done 2026-11-12. JetBrains Mono embedded in M6; Inter still open (egui default proportional font in use) |
 | **M1** ✅ | Connect dialog, known_hosts/TOFU, agent + key + password auth, PTY tabs with `alacritty_terminal` renderer, resize, copy/paste, reconnect | Done 2026-11-12 against the in-process test server (7 end-to-end tests + GUI check). **Open:** tmux on a real host (vi + htop verified on a VM in M5); ssh-agent path untested (agent service disabled on dev machine) |
 | **M2** ✅ | Probe + sudo password flow (protocol §9) + collector (static, cpu, mem, net, dio, df, who, ps), SYSTEM panel live, focus/visibility throttling (inactive host tabs run Hidden), status bar | Done 2026-11-12 against a fake host (3 collector tests + full SSH e2e test + GUI check). **Open:** real-VPS check of §8 targets; sh fallback for hosts without bash; shellcheck |
 | **M3** ✅ | WATCH panel: services (picker dialog, Live/Poll/Manual), firewall, security, scheduled | Done 2026-11-12: 6 collector tests (incl. sudo password / wrong password / no sudo), SSH e2e covers collector restart with privilege, Live watcher via `sudo -S`, unit list. **Open:** "failure within 1 s" needs a real systemd host to measure |
 | **M4** ✅ | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | Done 2026-11-13: `--bench-ui` p99 1.82 ms at 50 lines/s; SSH e2e test streams journal + file lines and discovers sources; discovery tested in both privilege modes |
 | **M5** ✅ | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts; added on request: tunnels, sockets table, Traffic tab, IP actions | Done 2026-11-16: 11 SSH e2e tests (jump host, actions via sudo, tunnel), real-VM check (`examples/real_host.rs`) + GUI check. **Open:** "daily driver for 3 hosts" needs the user's own use; collector CPU above budget (M6) |
-| **M6** | Perf pass, packaging (Windows MSI / Linux AppImage + .deb / macOS dmg), sudoers snippet docs | Budgets in §6 verified and recorded. **Progress 2026-11-16:** CI (Linux, Windows, real sshd + sudo), release workflow (zip / tar.gz / .deb / SHA256SUMS, draft release), README with sudo notes; client budgets met on a real host (idle 0.70 %, 50 MB, first window 151 ms, frame p99 1.92 ms, 11.5 MB). **Open:** collector CPU 0.28–0.47 % vs the 0.1 % budget (decide: raise the budget or slow the fast tier); MSI / AppImage / dmg (zip, tar.gz and .deb exist); no release tag yet; Inter + JetBrains Mono fonts still not embedded |
+| **M6** ✅ | Perf pass, packaging, sudoers snippet docs, logo, versioning | Done 2026-11-16 as **v1.0.0**: budgets in §6 verified on a real host (collector 0.28–0.47 % under the revised 0.5 % budget, D-034; client idle 0.70 %, 50 MB, first window 151 ms, frame p99 1.92 ms); CI (Linux, Windows, real sshd + sudo); release workflow with Inno Setup installer, .deb, AppImage, .dmg (D-035); README with sudo notes; logo + exe icon + version (`--version`, top-bar tooltip, welcome screen); JetBrains Mono bundled. **Open:** Inter not embedded (needs the font files); packages not code-signed; ssh-agent auth and tmux untested on a real host |
 
 Out of scope for v1: editing firewall rules, file manager/SFTP, port forwarding UI, Windows/BSD servers, light theme, user-arranged docking.

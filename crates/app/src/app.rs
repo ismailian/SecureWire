@@ -959,8 +959,11 @@ impl SecureWireApp {
     fn welcome(&mut self, ui: &mut Ui) {
         ui.add_space(ui.available_height() * 0.22);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new(ph::PLUGS_CONNECTED).size(40.0).color(ACC));
+            theme::logo(ui, 72.0);
+            ui.add_space(6.0);
             ui.label(RichText::new("SecureWire").size(22.0).color(TX0));
+            ui.label(w::faint(format!("version {}", theme::VERSION)));
+            ui.add_space(4.0);
             ui.label(w::dim(
                 "Connect to a server to open a terminal and its live panels.",
             ));

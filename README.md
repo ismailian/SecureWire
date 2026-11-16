@@ -1,3 +1,5 @@
+<p align="center"><img src="packaging/icons/securewire-128.png" width="96" alt="SecureWire logo"></p>
+
 # SecureWire
 
 A desktop SSH workstation for people who look after their own Linux servers. It puts an interactive terminal in the middle, with live panels around it for the things you would otherwise type every time: `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status`, `fail2ban-client status`…
@@ -52,7 +54,17 @@ Entering the password per session is the safer default. Hosts where you log in a
 
 ## Install
 
-Download a package from the [releases](../../releases): Windows `.zip`, Linux `.tar.gz` or `.deb`, or macOS `.tar.gz`.
+Download a package from the [releases](../../releases):
+
+| System | Package |
+|---|---|
+| Windows 10/11 (x64) | `…-windows-x86_64-setup.exe` installer (per-user, no admin needed) or `…-portable.zip` |
+| Linux (x86_64) | `.deb`, `.AppImage` or `.tar.gz` |
+| macOS (Apple silicon) | `.dmg` (drag SecureWire to Applications) or `.tar.gz` |
+
+The packages aren't code-signed yet. On Windows, SmartScreen may ask you to confirm ("More info" → "Run anyway"). On macOS, open the app the first time with right-click → Open. `SHA256SUMS` on the release page lets you check each download.
+
+`securewire --version` prints the version; it is also in the window's top-left tooltip.
 
 Or build from source with a stable Rust toolchain (1.90 or later):
 
@@ -71,6 +83,10 @@ Saved hosts, watched services and log sources live in `hosts.toml`:
 - Linux: `~/.config/securewire`
 
 Passwords never go into that file.
+
+## License
+
+MIT or Apache-2.0, at your option ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)). The bundled JetBrains Mono font is under the SIL Open Font License ([`crates/app/assets/fonts/OFL.txt`](crates/app/assets/fonts/OFL.txt)).
 
 ## Development
 

@@ -4,11 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "SecureWire desktop app (egui)."
+description = "Desktop SSH workstation: a terminal with live server panels over one SSH connection."
+homepage = "https://github.com/ismailian/SecureWire"
+repository = "https://github.com/ismailian/SecureWire"
 
 [[bin]]
 name = "securewire"
 path = "src/main.rs"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dependencies]
 sw-core.workspace = true
@@ -31,4 +36,9 @@ extended-description = "Desktop SSH workstation: an interactive terminal with li
 assets = [
     ["target/release/securewire", "usr/bin/", "755"],
     ["../../packaging/securewire.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/icons/securewire-256.png", "usr/share/icons/hicolor/256x256/apps/securewire.png", "644"],
+    ["../../packaging/icons/securewire-128.png", "usr/share/icons/hicolor/128x128/apps/securewire.png", "644"],
+    ["../../packaging/icons/securewire-64.png", "usr/share/icons/hicolor/64x64/apps/securewire.png", "644"],
+    ["../../packaging/icons/securewire-32.png", "usr/share/icons/hicolor/32x32/apps/securewire.png", "644"],
+    ["../../packaging/icons/securewire.svg", "usr/share/icons/hicolor/scalable/apps/securewire.svg", "644"],
 ]

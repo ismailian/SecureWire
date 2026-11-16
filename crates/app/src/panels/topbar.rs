@@ -34,17 +34,11 @@ pub fn show(ui: &mut Ui, hosts: &[HostTab<'_>], active: usize, layout: &mut Layo
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         // Brand
-        let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-        ui.painter().rect_filled(r, 4, ACC);
-        ui.painter().text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            ph::PLUGS_CONNECTED,
-            theme::prop(12.0),
-            BG0,
-        );
+        let version = format!("SecureWire {}", theme::VERSION);
+        theme::logo(ui, 20.0).on_hover_text(&version);
         ui.add_space(7.0);
-        ui.label(RichText::new("SecureWire").color(TX0).strong());
+        ui.label(RichText::new("SecureWire").color(TX0).strong())
+            .on_hover_text(version);
         ui.add_space(16.0);
 
         for (i, h) in hosts.iter().enumerate() {

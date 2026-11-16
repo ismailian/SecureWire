@@ -244,8 +244,13 @@ fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
                 );
                 let src = v.sources.get(line.source as usize);
                 let (sname, scol) = src.map_or(("?", TX2), |s| (s.name.as_str(), s.color));
-                p.text(
-                    pos2(r.left() + 110.0, y),
+                // Clipped to its column: long source names must not run into the level.
+                let src_rect = egui::Rect::from_min_max(
+                    pos2(r.left() + 110.0, r.top()),
+                    pos2(r.left() + 206.0, r.bottom()),
+                );
+                ui.painter_at(src_rect).text(
+                    pos2(src_rect.left(), y),
                     Align2::LEFT_CENTER,
                     sname,
                     f.clone(),
@@ -253,7 +258,7 @@ fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
                 );
                 let (lc, _) = level_colors(line.level);
                 p.text(
-                    pos2(r.left() + 196.0, y),
+                    pos2(r.left() + 212.0, y),
                     Align2::LEFT_CENTER,
                     line.level.label(),
                     theme::mono(10.5),
@@ -264,7 +269,7 @@ fn logs(ui: &mut Ui, v: &mut HostView, hu: &mut HostUi) {
                 } else {
                     TX1
                 };
-                let msg_rect = egui::Rect::from_min_max(pos2(r.left() + 240.0, r.top()), r.max);
+                let msg_rect = egui::Rect::from_min_max(pos2(r.left() + 256.0, r.top()), r.max);
                 ui.painter_at(msg_rect).text(
                     pos2(msg_rect.left(), y),
                     Align2::LEFT_CENTER,

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- SecureWire logo, small-size variant (16-32 px): no wire, the shield fills the tile. -->
+  <defs>
+    <linearGradient id="sh" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6fd8ca"/>
+      <stop offset="1" stop-color="#38a596"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="#12161b"/>
+  <path d="M512 96 C622 168 732 192 840 196 V500 C840 708 700 852 512 932 C324 852 184 708 184 500 V196 C292 192 402 168 512 96 Z"
+        fill="url(#sh)"/>
+  <path d="M352 380 L476 500 L352 620" fill="none" stroke="#0c0f13" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M540 640 H686" stroke="#0c0f13" stroke-width="92" stroke-linecap="round"/>
+</svg>

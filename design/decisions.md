@@ -146,3 +146,12 @@ Format: **context → decision → consequences**.
 ### D-033 · Access logs are parsed on the net thread
 - **Decision:** For file sources whose name contains "access", the log channel also parses each line as an nginx/apache common or combined record (`core::logs::parse_access`) and sends `EventKind::Access` batches. The UI only aggregates them (per IP, per status class, last 2000 requests) for the Traffic tab.
 - **Consequences:** No parsing in `update()` (non-negotiable 4). An access log has to be added as a log source before the Traffic tab appears.
+
+### D-034 · Collector CPU budget is 0.5 % of one core
+- **Context:** The M0 budget of < 0.1 % was a guess. On a real 2-vCPU VM (M5/M6) the collector costs 0.28 % in steady state with Live services and 0.47 % with 10 s polling. The 2 s fast tier (cpu, mem, net, disk I/O; no forks) alone is ~0.23 %: it is bash waking up and reading four `/proc` files. Meeting 0.1 % would mean a ~5 s fast tier, and the live charts would feel sluggish.
+- **Decision:** Keep the 2 s fast tier. The budget becomes < 0.5 % of one core in steady state with the default sections visible. Unfocused and minimized windows still slow collection down (protocol §5), so a background SecureWire costs much less.
+- **Consequences:** M6's perf pass is met. A section that pushes the steady state above 0.5 % needs its own tier or gate (as fail2ban got in D-030).
+
+### D-035 · Packaging: Inno Setup on Windows, AppImage + .deb on Linux, .dmg on macOS
+- **Decision:** The release workflow builds a portable zip and an Inno Setup installer for Windows (per-user by default, no admin needed; `packaging/windows/securewire.iss`), a tar.gz, .deb and AppImage for Linux, and a tar.gz plus a .dmg holding `SecureWire.app` for macOS. The version comes from the workspace `Cargo.toml`, and a tag must match it. The logo (`packaging/icons/securewire.svg`, plus a simpler variant for ≤ 32 px) is rendered to PNGs and a multi-size .ico that are committed; `build.rs` embeds the .ico and version info in the Windows exe.
+- **Consequences:** No MSI: Inno Setup was already in use on the maintainer's machine and needs no WiX toolchain. The macOS app is ad-hoc signed, not notarized, so the first launch needs right-click → Open. Packages are not code-signed on Windows either (SmartScreen may warn).

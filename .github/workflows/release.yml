@@ -1,10 +1,12 @@
 name: Release
 
-# Push a tag like v0.1.0 to build packages; they are attached to a DRAFT release,
-# which a maintainer reviews and publishes.
+# Push a tag like v1.0.0 (matching the version in Cargo.toml) to build every package; they are
+# attached to a DRAFT release, which a maintainer reviews and publishes.
+# "Run workflow" (manual) builds the same packages as workflow artifacts without a release.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,31 +26,78 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $v"; exit 1
+          fi
+          echo "SW_VERSION=$v" >> "$GITHUB_ENV"
+          echo "SW_PKG=securewire-v$v-${{ matrix.name }}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: System packages (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - run: cargo build --release -p securewire
+
+      # ---- Windows: portable zip + Inno Setup installer ----
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path target/release/securewire.exe -DestinationPath "dist/securewire-${{ github.ref_name }}-${{ matrix.name }}.zip"
-      - name: Package (Linux / macOS)
-        if: runner.os != 'Windows'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/securewire.exe, README.md, LICENSE-MIT, LICENSE-APACHE -DestinationPath "dist/$env:SW_PKG-portable.zip"
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          ./packaging/windows/build-installer.ps1
+
+      # ---- Linux: tar.gz, .deb, AppImage ----
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         run: |
           mkdir -p dist
-          tar -C target/release -czf "dist/securewire-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" securewire
-      - name: .deb (Linux)
+          tar -C target/release -czf "dist/$SW_PKG.tar.gz" securewire
+          A=AppDir
+          mkdir -p $A/usr/bin $A/usr/share/applications $A/usr/share/icons/hicolor/256x256/apps
+          cp target/release/securewire $A/usr/bin/
+          cp packaging/securewire.desktop $A/ && cp packaging/securewire.desktop $A/usr/share/applications/
+          cp packaging/icons/securewire-256.png $A/securewire.png
+          cp packaging/icons/securewire-256.png $A/usr/share/icons/hicolor/256x256/apps/securewire.png
+          ln -s usr/bin/securewire $A/AppRun
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool $A "dist/$SW_PKG.AppImage"
+      - name: .deb tool (Linux)
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb
-      - name: Build .deb
+      - name: .deb (Linux)
         if: runner.os == 'Linux'
         run: cargo deb -p securewire --no-build --output dist/
+
+      # ---- macOS: tar.gz + SecureWire.app in a .dmg (unsigned) ----
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf "dist/$SW_PKG.tar.gz" securewire
+          APP=dmg/SecureWire.app
+          mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
+          cp target/release/securewire $APP/Contents/MacOS/
+          sed "s/@VERSION@/$SW_VERSION/g" packaging/macos/Info.plist > $APP/Contents/Info.plist
+          I=securewire.iconset; P=packaging/icons/securewire; mkdir -p $I
+          cp $P-16.png $I/icon_16x16.png;     cp $P-32.png $I/icon_16x16@2x.png
+          cp $P-32.png $I/icon_32x32.png;     cp $P-64.png $I/icon_32x32@2x.png
+          cp $P-128.png $I/icon_128x128.png;  cp $P-256.png $I/icon_128x128@2x.png
+          cp $P-256.png $I/icon_256x256.png;  cp $P-512.png $I/icon_256x256@2x.png
+          cp $P-512.png $I/icon_512x512.png;  cp $P-1024.png $I/icon_512x512@2x.png
+          iconutil -c icns $I -o $APP/Contents/Resources/securewire.icns
+          codesign --force --deep -s - $APP   # ad-hoc signature; not notarized
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname SecureWire -srcfolder dmg -ov -format UDZO "dist/$SW_PKG.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
           name: securewire-${{ matrix.name }}
@@ -56,6 +105,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
