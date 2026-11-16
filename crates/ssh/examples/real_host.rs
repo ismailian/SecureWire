@@ -423,8 +423,18 @@ fn main() {
     if std::env::var_os("SW_REAL_STRICT").is_some() {
         let mut missing = Vec::new();
         for k in [
-            "Probe", "Static", "Cpu", "Mem", "Net", "DiskIo", "Mounts", "Processes", "Listeners", "Services",
-            "LogCandidates", "LogSources",
+            "Probe",
+            "Static",
+            "Cpu",
+            "Mem",
+            "Net",
+            "DiskIo",
+            "Mounts",
+            "Processes",
+            "Listeners",
+            "Services",
+            "LogCandidates",
+            "LogSources",
         ] {
             if !run.counts.contains_key(k) {
                 missing.push(k.to_owned());
@@ -434,7 +444,10 @@ fn main() {
             missing.push("PTY echo / resize".into());
         }
         if run.last.get("Sudo").map(String::as_str) != Some("Sudo(Password)") {
-            missing.push(format!("sudo password mode (got {:?})", run.last.get("Sudo")));
+            missing.push(format!(
+                "sudo password mode (got {:?})",
+                run.last.get("Sudo")
+            ));
         }
         for id in [1, 2] {
             if !run.results.get(&id).is_some_and(|r| r.0) {
@@ -572,7 +585,10 @@ fn steady(run: &mut Run) {
     } else {
         sw_core::config::ServiceMode::Poll
     };
-    run.host.send(Command::SetServiceMode { mode, poll_secs: 10 });
+    run.host.send(Command::SetServiceMode {
+        mode,
+        poll_secs: 10,
+    });
     let term = Terminal::new(
         Size {
             cols: 160,
@@ -609,7 +625,19 @@ fn steady(run: &mut Run) {
     let groups: [(&str, &[Section]); 7] = [
         (
             "all default-visible",
-            &[Section::Cpu, Section::Mem, Section::Net, Section::Dio, Section::Df, Section::Who, Section::Svc, Section::Ports, Section::Fw, Section::F2b, Section::Auth],
+            &[
+                Section::Cpu,
+                Section::Mem,
+                Section::Net,
+                Section::Dio,
+                Section::Df,
+                Section::Who,
+                Section::Svc,
+                Section::Ports,
+                Section::Fw,
+                Section::F2b,
+                Section::Auth,
+            ],
         ),
         ("none", &[]),
         (
@@ -623,7 +651,10 @@ fn steady(run: &mut Run) {
     ];
     // SW_REAL_STEADY_ONLY=f2b  SW_REAL_STEADY_SECS=130: one group, a longer window.
     let only = std::env::var("SW_REAL_STEADY_ONLY").ok();
-    let secs: u64 = std::env::var("SW_REAL_STEADY_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+    let secs: u64 = std::env::var("SW_REAL_STEADY_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
     for (name, on) in groups {
         if only.as_deref().is_some_and(|o| !name.contains(o)) {
             continue;
