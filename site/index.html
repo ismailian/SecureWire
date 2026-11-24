@@ -28,11 +28,11 @@
     "name": "SecureWire",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Windows 10, Windows 11, Linux, macOS",
-    "softwareVersion": "1.0.0",
+    "softwareVersion": "1.1.0",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "license": "https://github.com/ismailian/SecureWire/blob/main/LICENSE-MIT",
     "url": "https://securewire-app.pages.dev/",
-    "downloadUrl": "https://github.com/ismailian/SecureWire/releases/tag/v1.0.0"
+    "downloadUrl": "https://github.com/ismailian/SecureWire/releases/tag/v1.1.0"
   }
   </script>
 </head>
@@ -59,7 +59,7 @@
   <!-- Hero -->
   <div class="hero">
     <div class="wrap">
-      <span class="eyebrow">v1.0.0 · free and open source</span>
+      <span class="eyebrow">v1.1.0 · free and open source</span>
       <h1>Your servers, <span>at a glance</span>, in one SSH window.</h1>
       <p class="lede">SecureWire is a desktop SSH workstation. You get a real terminal in the middle and live panels around it: resources, services, firewall, fail2ban, logs and web traffic. It all runs over one SSH connection, and nothing is installed on your server.</p>
       <div class="cta">
@@ -178,6 +178,17 @@
         </div>
         <div class="frame"><img src="assets/img/palette.webp" width="980" height="330" alt="Command palette with the query restart, listing Restart mysql, Restart nginx, Restart service…, Restart redis-server and more." loading="lazy"></div>
       </div>
+      <div class="feature reveal">
+        <div class="feature-text">
+          <h3>Files on the server, uploads and downloads over SCP</h3>
+          <p>Press <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd> to browse the server. Copy, cut, paste, rename and delete there with plain <code>cp</code>, <code>mv</code> and <code>rm</code> as your own user. Anything that removes or replaces data shows the exact command first. Pick files to upload, drop them on the window, or paste files copied in Explorer. To download, pick a folder on your computer.</p>
+          <ul class="ticks">
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Transfers run on the same SSH connection, with progress and cancel</li>
+            <li><svg class="icon"><use href="assets/icons.svg#check"/></svg>Permissions, owners and dates at a glance</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/img/files.png" width="954" height="473" alt="The Files tab: one toolbar with back, up and refresh, a breadcrumb path field, and upload, download, new folder and delete icons, above a list of folders and files with size, modified date, permissions and owner." loading="lazy"></div>
+      </div>
     </div>
   </section>
 
@@ -244,7 +255,7 @@
     <div class="wrap">
       <div class="section-head reveal">
         <span class="kicker">Download</span>
-        <h2>Get SecureWire 1.0.0</h2>
+        <h2>Get SecureWire 1.1.0</h2>
         <p>Free and open source under MIT or Apache-2.0. Each download is a single small app with nothing else to install.</p>
       </div>
       <div class="downloads">
@@ -252,8 +263,8 @@
           <header><svg class="icon"><use href="assets/icons.svg#monitor"/></svg><h3>Windows</h3><span class="tag">Your system</span></header>
           <p class="req">Windows 10 or 11, 64-bit</p>
           <ul class="files">
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-windows-x86_64-setup.exe"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Installer<small>per-user, no admin needed</small></span><em>5.9 MB</em></a></li>
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-windows-x86_64-portable.zip"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>Portable .zip<small>run from any folder</small></span><em>5.5 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-windows-x86_64-setup.exe"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Installer<small>per-user, no admin needed</small></span><em>6.6 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-windows-x86_64-portable.zip"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>Portable .zip<small>run from any folder</small></span><em>6.5 MB</em></a></li>
           </ul>
           <p class="hint">Not code-signed yet: SmartScreen may ask you to confirm (More info → Run anyway).</p>
         </article>
@@ -261,9 +272,9 @@
           <header><svg class="icon"><use href="assets/icons.svg#terminal"/></svg><h3>Linux</h3><span class="tag">Your system</span></header>
           <p class="req">x86_64, X11 or Wayland</p>
           <ul class="files">
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire_1.0.0-1_amd64.deb"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>.deb package<small>Debian, Ubuntu, Mint</small></span><em>5.2 MB</em></a></li>
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-linux-x86_64.AppImage"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>AppImage<small>any distribution</small></span><em>7.5 MB</em></a></li>
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-linux-x86_64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>7.2 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire_1.1.0-1_amd64.deb"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>.deb package<small>Debian, Ubuntu, Mint</small></span><em>6.0 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-linux-x86_64.AppImage"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>AppImage<small>any distribution</small></span><em>8.5 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-linux-x86_64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>8.2 MB</em></a></li>
           </ul>
           <p class="hint">AppImage: <code>chmod +x</code> it first.</p>
         </article>
@@ -271,13 +282,13 @@
           <header><svg class="icon"><use href="assets/icons.svg#laptop"/></svg><h3>macOS</h3><span class="tag">Your system</span></header>
           <p class="req">macOS 11 or later, Apple silicon</p>
           <ul class="files">
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-macos-aarch64.dmg"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Disk image (.dmg)<small>drag to Applications</small></span><em>5.7 MB</em></a></li>
-            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-macos-aarch64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>5.0 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-macos-aarch64.dmg"><svg class="icon"><use href="assets/icons.svg#download"/></svg><span>Disk image (.dmg)<small>drag to Applications</small></span><em>6.7 MB</em></a></li>
+            <li><a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-macos-aarch64.tar.gz"><svg class="icon"><use href="assets/icons.svg#box"/></svg><span>.tar.gz<small>just the binary</small></span><em>5.9 MB</em></a></li>
           </ul>
           <p class="hint">Not notarized yet: open it the first time with right-click → Open.</p>
         </article>
       </div>
-      <p class="dl-foot">Check your download against <a href="https://github.com/ismailian/SecureWire/releases/download/v1.0.0/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/ismailian/SecureWire/releases">all releases</a> · <a href="docs.html#build">build from source</a></p>
+      <p class="dl-foot">Check your download against <a href="https://github.com/ismailian/SecureWire/releases/download/v1.1.0/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/ismailian/SecureWire/releases">all releases</a> · <a href="docs.html#build">build from source</a></p>
     </div>
   </section>
 
@@ -311,7 +322,7 @@
         </details>
         <details>
           <summary>Why does Windows SmartScreen or macOS warn me?</summary>
-          <div><p>The 1.0.0 packages are not code-signed or notarized yet. You can check each file against <code>SHA256SUMS</code> on the release page, or <a href="docs.html#build">build it from source</a>.</p></div>
+          <div><p>The 1.1.0 packages are not code-signed or notarized yet. You can check each file against <code>SHA256SUMS</code> on the release page, or <a href="docs.html#build">build it from source</a>.</p></div>
         </details>
         <details>
           <summary>Is it free?</summary>
