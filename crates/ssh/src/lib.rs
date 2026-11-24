@@ -11,6 +11,7 @@ mod actor;
 pub mod api;
 pub mod collector;
 pub mod demo;
+mod files;
 pub mod handle;
 pub mod pipeline;
 mod remote;

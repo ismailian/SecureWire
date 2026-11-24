@@ -27,6 +27,8 @@ pub enum Action {
     LargestDirs(String),
     /// Sockets on a local or remote port, with their processes.
     WhoOnPort(u16),
+    /// File browser operation (protocol §15); always runs as the login user.
+    Files(crate::files::FsOp),
 }
 
 /// fail2ban jail names: letters, digits, `.`, `_`, `-` (1–64).
@@ -61,6 +63,7 @@ impl Action {
             }
         };
         Ok(match self {
+            Action::Files(op) => op.command()?,
             Action::ServiceStart(u) => format!("systemctl start -- {}", unit(u)?),
             Action::ServiceStop(u) => format!("systemctl stop -- {}", unit(u)?),
             Action::ServiceRestart(u) => format!("systemctl restart -- {}", unit(u)?),
@@ -95,19 +98,32 @@ impl Action {
 
     /// Changes the server (asks for confirmation, shown in red).
     pub fn destructive(&self) -> bool {
-        !matches!(self, Action::LargestDirs(_) | Action::WhoOnPort(_))
+        match self {
+            Action::Files(op) => op.destructive(),
+            _ => !matches!(self, Action::LargestDirs(_) | Action::WhoOnPort(_)),
+        }
+    }
+
+    /// Never prefixed with sudo, even when the session has it (file browser operations
+    /// act with the login user's own permissions, like the terminal).
+    pub fn as_user(&self) -> bool {
+        matches!(self, Action::Files(_))
     }
 
     /// Still useful without sudo (sees less): runs plain when the session has no privilege.
     /// Everything else needs root and is refused up front instead.
     pub fn works_unprivileged(&self) -> bool {
-        matches!(self, Action::LargestDirs(_) | Action::WhoOnPort(_))
+        matches!(
+            self,
+            Action::LargestDirs(_) | Action::WhoOnPort(_) | Action::Files(_)
+        )
     }
 
     /// Button / title text: "Restart nginx".
     pub fn verb(&self) -> String {
         let short = |u: &str| u.strip_suffix(".service").unwrap_or(u).to_owned();
         match self {
+            Action::Files(op) => op.verb(),
             Action::ServiceStart(u) => format!("Start {}", short(u)),
             Action::ServiceStop(u) => format!("Stop {}", short(u)),
             Action::ServiceRestart(u) => format!("Restart {}", short(u)),
@@ -133,7 +149,7 @@ impl Action {
             | Action::ServiceReload(_) => Some(Section::Svc),
             Action::Ban { .. } | Action::Unban { .. } => Some(Section::F2b),
             Action::Kill { .. } => Some(Section::Ps),
-            Action::LargestDirs(_) | Action::WhoOnPort(_) => None,
+            Action::LargestDirs(_) | Action::WhoOnPort(_) | Action::Files(_) => None,
         }
     }
 }

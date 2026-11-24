@@ -56,5 +56,14 @@ Name: "{autodesktop}\SecureWire"; Filename: "{app}\securewire.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\securewire.exe"; Description: "{cm:LaunchProgram,SecureWire}"; Flags: nowait postinstall skipifsilent
+; In-app update (D-037): the app starts this installer with /RELAUNCH=1 (silently when it was
+; installed by it) and exits; SecureWire starts again here and deletes the downloaded installer.
+Filename: "{app}\securewire.exe"; Flags: nowait; Check: RelaunchAfterUpdate
 
 ; Saved hosts and known_hosts in %APPDATA%\SecureWire are kept on uninstall.
+
+[Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;

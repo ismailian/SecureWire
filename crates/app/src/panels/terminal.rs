@@ -29,6 +29,10 @@ pub struct TermUiOut {
     pub resize: Option<(PtyId, Size)>,
     pub reconnect: bool,
     pub focused: bool,
+    /// Files tab: clicked / closed / "open" button.
+    pub files_select: bool,
+    pub files_close: bool,
+    pub files_open: bool,
 }
 
 pub struct Banner<'a> {
@@ -36,6 +40,7 @@ pub struct Banner<'a> {
     pub error: Option<&'a str>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     tabs: &mut [TermTab],
@@ -44,8 +49,11 @@ pub fn show(
     banner: Banner<'_>,
     pal: &sw_term::Palette,
     interactive: bool,
+    // `Some(active)` when the host has a Files tab.
+    files: Option<bool>,
 ) -> TermUiOut {
     let mut out = TermUiOut::default();
+    let files_active = files == Some(true);
 
     // ---- tab strip ----
     let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
@@ -56,8 +64,60 @@ pub fn show(
         LINE,
     );
     let mut x = strip.left();
+    if files.is_some() {
+        let color = if files_active { TX0 } else { TX2 };
+        let g = ui.painter().layout_no_wrap(
+            format!("{}  Files", ph::FOLDERS),
+            theme::prop(12.5),
+            color,
+        );
+        let rect = egui::Rect::from_min_size(pos2(x, strip.top()), vec2(g.size().x + 46.0, 32.0));
+        let resp = ui.interact(rect, ui.id().with("files-tab"), Sense::click());
+        let p = ui.painter();
+        if files_active {
+            p.rect_filled(rect, 0, BG0);
+            p.rect_filled(
+                egui::Rect::from_min_size(rect.min, vec2(rect.width(), 2.0)),
+                0,
+                ACC,
+            );
+        } else if resp.hovered() {
+            p.rect_filled(rect, 0, BG2);
+        }
+        p.rect_filled(
+            egui::Rect::from_min_max(pos2(rect.right() - 1.0, rect.top()), rect.max),
+            0,
+            LINE,
+        );
+        p.galley(
+            pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0),
+            g,
+            color,
+        );
+        let close_r = egui::Rect::from_center_size(
+            pos2(rect.right() - 16.0, rect.center().y),
+            vec2(18.0, 18.0),
+        );
+        let close = ui.interact(close_r, ui.id().with("files-close"), Sense::click());
+        if close.hovered() {
+            ui.painter().rect_filled(close_r, 3, BG3);
+        }
+        ui.painter().text(
+            close_r.center(),
+            Align2::CENTER_CENTER,
+            ph::X,
+            theme::prop(11.0),
+            if close.hovered() { TX0 } else { TX3 },
+        );
+        if close.clicked() || resp.middle_clicked() {
+            out.files_close = true;
+        } else if resp.clicked() {
+            out.files_select = true;
+        }
+        x = rect.right();
+    }
     for (i, t) in tabs.iter().enumerate() {
-        let on = i == active;
+        let on = i == active && !files_active;
         let title = t
             .title
             .lock()
@@ -137,7 +197,20 @@ pub fn show(
     {
         out.new_tab = true;
     }
-    if let Some(t) = tabs.get(active) {
+    if files.is_none()
+        && w::icon_button(
+            &mut c,
+            ph::FOLDERS,
+            "Files (Ctrl+Shift+E): browse the server, transfer over SCP",
+            false,
+        )
+        .clicked()
+    {
+        out.files_open = true;
+    }
+    if files_active {
+        // The Files tab draws itself below the banner.
+    } else if let Some(t) = tabs.get(active) {
         let s = t.term.size();
         c.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(6.0);
@@ -186,6 +259,9 @@ pub fn show(
     }
 
     // ---- terminal ----
+    if files_active {
+        return out;
+    }
     let Some(tab) = tabs.get_mut(active) else {
         ui.add_space(40.0);
         ui.vertical_centered(|ui| {

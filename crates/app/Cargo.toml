@@ -26,6 +26,18 @@ sw-term.workspace = true
 secrecy.workspace = true
 directories.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Update checker (D-037): HTTPS with rustls on ring (already used by russh); SHA-256 of the download.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
+# Files tab: native pickers for Upload (files/folders) and Download (target folder).
+rfd = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+# Files tab: read the file list Explorer puts on the clipboard; watch the V key for Ctrl V.
+clipboard-win = "5"
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 # `cargo deb -p securewire` (release workflow).
 [package.metadata.deb]

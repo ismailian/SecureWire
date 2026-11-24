@@ -30,6 +30,7 @@ pub enum Pick {
     /// For the active host.
     Host(Request),
     NewTerminal,
+    Files,
     ToggleLeft,
     ToggleRight,
     ToggleBottom,
@@ -259,6 +260,12 @@ fn items(c: &PaletteCtx) -> Vec<Item> {
             "New terminal".into(),
             "Ctrl Shift T",
             Pick::NewTerminal,
+        ));
+        v.push(now(
+            ph::FOLDERS,
+            "Files: browse, upload, download".into(),
+            "Ctrl Shift E",
+            Pick::Files,
         ));
         for s in &c.services {
             let short = s.strip_suffix(".service").unwrap_or(s);

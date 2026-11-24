@@ -9,6 +9,7 @@ mod panels;
 mod state;
 mod store;
 mod theme;
+mod update;
 mod widgets;
 
 fn main() -> eframe::Result {
@@ -29,6 +30,8 @@ fn main() -> eframe::Result {
         })
     });
     let prefill = parse_connect_args(&args);
+    // `--files`: open the Files tab on the first host (with --demo or --connect).
+    let files = args.iter().any(|a| a == "--files");
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
@@ -44,7 +47,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "SecureWire",
         options,
-        Box::new(|cc| Ok(Box::new(app::SecureWireApp::new(cc, demo, prefill, bench)))),
+        Box::new(|cc| {
+            Ok(Box::new(app::SecureWireApp::new(
+                cc, demo, prefill, bench, files,
+            )))
+        }),
     )
 }
 

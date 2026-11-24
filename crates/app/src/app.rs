@@ -27,7 +27,7 @@ use crate::dialogs::{
 };
 use crate::palette::{Palette, PaletteCtx, Pick};
 use crate::panels::terminal::{Banner, TermTab};
-use crate::panels::{dock, status, system, terminal, topbar, watch};
+use crate::panels::{dock, files, status, system, terminal, topbar, watch};
 use crate::state::{DockTab, HostUi, HostView, Request};
 use crate::store::{self, Store};
 use crate::theme::{self, tok::*};
@@ -53,6 +53,9 @@ struct HostEntry {
     ports: crate::dialogs::PortsDialog,
     /// Actions sent and not answered yet, by id.
     pending: HashMap<u64, Action>,
+    /// The Files tab (opened on demand) and whether it is the visible central tab.
+    files: Option<files::FilesTab>,
+    files_active: bool,
 }
 
 impl HostEntry {
@@ -89,6 +92,21 @@ impl HostEntry {
         self.active_tab = self.tabs.len() - 1;
     }
 
+    /// Ctrl Shift E: open the Files tab, or switch between it and the terminal.
+    fn toggle_files(&mut self, ctx: &egui::Context) {
+        if self.files.is_none() {
+            self.files = Some(files::FilesTab::new(ctx));
+            self.files_active = true;
+        } else {
+            self.files_active = !self.files_active;
+            if !self.files_active
+                && let Some(t) = self.tabs.get_mut(self.active_tab)
+            {
+                t.view.request_focus();
+            }
+        }
+    }
+
     fn close_tab(&mut self, i: usize) {
         if i < self.tabs.len() {
             let t = self.tabs.remove(i);
@@ -120,6 +138,12 @@ pub struct SecureWireApp {
     frame_stats: Option<(std::path::PathBuf, Instant, u32)>,
     /// `--bench-ui`: demo host at 50 log lines/s, frame times → report file, then exit.
     bench: Option<Bench>,
+    updater: crate::update::Updater,
+    ctx: egui::Context,
+    /// Files-tab requests produced while draining events, run after the drain.
+    files_out: Vec<(HostId, files::Out)>,
+    /// `--files`: open the Files tab on the next host that connects.
+    open_files: bool,
 }
 
 impl SecureWireApp {
@@ -128,6 +152,7 @@ impl SecureWireApp {
         demo: bool,
         prefill: Option<HostConfig>,
         bench: Option<std::path::PathBuf>,
+        open_files: bool,
     ) -> Self {
         let demo = demo || bench.is_some();
         theme::install(&cc.egui_ctx);
@@ -168,12 +193,19 @@ impl SecureWireApp {
                 start: Instant::now(),
                 ms: Vec::new(),
             }),
+            updater: crate::update::Updater::start(&cc.egui_ctx, !demo),
+            ctx: cc.egui_ctx.clone(),
+            files_out: Vec::new(),
+            open_files,
         };
         if demo {
             let id = app.alloc_id();
             let rate = app.bench.as_ref().map(|_| 50.0);
             let handle = spawn_demo_host_rate(id, app.events_tx.clone(), app.wake.clone(), rate);
             app.push_host(handle, "prod-web-01 (demo)", None, true);
+            if let Some(h) = app.hosts.last_mut().filter(|_| app.open_files) {
+                h.toggle_files(&cc.egui_ctx);
+            }
         } else if let Some(h) = prefill {
             let saved = app
                 .saved
@@ -219,6 +251,8 @@ impl SecureWireApp {
             output: None,
             ports: Default::default(),
             pending: HashMap::new(),
+            files: None,
+            files_active: false,
         });
         self.active = self.hosts.len() - 1;
     }
@@ -285,6 +319,10 @@ impl SecureWireApp {
                 });
             }
             h.new_tab();
+            if std::mem::take(&mut self.open_files) {
+                h.files = Some(files::FilesTab::new(&self.ctx));
+                h.files_active = true;
+            }
         }
     }
 
@@ -383,6 +421,19 @@ impl SecureWireApp {
                     h.auth_prompt = Some(AuthPrompt::new(h.view.name.clone(), msg, method, key));
                 }
                 EventKind::Error(msg) => h.last_error = Some(msg),
+                EventKind::FsListing { id, result } => {
+                    if let Some(f) = &mut h.files {
+                        f.on_listing(id, result);
+                    }
+                }
+                EventKind::Transfer { id, progress } => {
+                    if let Some(f) = &mut h.files {
+                        let mut out = Vec::new();
+                        f.on_transfer(id, progress, &mut out);
+                        self.files_out
+                            .extend(out.into_iter().map(|o| (h.handle.id, o)));
+                    }
+                }
                 EventKind::ActionResult {
                     id,
                     ok,
@@ -393,6 +444,22 @@ impl SecureWireApp {
                         continue;
                     };
                     let verb = action.verb();
+                    if matches!(action, Action::Files(_)) {
+                        // File browser: show the folder as it is now; only errors need words.
+                        if let Some(f) = &mut h.files {
+                            let mut out = Vec::new();
+                            f.refresh_remote(&mut out);
+                            self.files_out
+                                .extend(out.into_iter().map(|o| (h.handle.id, o)));
+                        }
+                        if !ok {
+                            let msg = sanitize(output.trim());
+                            let msg = if msg.is_empty() { "failed".into() } else { msg };
+                            self.toast =
+                                Some((format!("{} {verb}: {msg}", ph::WARNING), Instant::now()));
+                        }
+                        continue;
+                    }
                     if ok && action.destructive() && output.trim().is_empty() {
                         self.toast = Some((format!("{} {verb}: done", ph::CHECK), Instant::now()));
                     } else {
@@ -447,6 +514,7 @@ impl SecureWireApp {
         let mut new_tab = false;
         let mut close_tab = false;
         let mut next_tab = false;
+        let mut toggle_files = false;
         ui.input_mut(|i| {
             if i.consume_shortcut(&sc(cs, Key::B)) {
                 self.layout.left = !self.layout.left;
@@ -459,6 +527,9 @@ impl SecureWireApp {
             }
             if i.consume_shortcut(&sc(cs, Key::P)) {
                 self.cmd_palette.toggle();
+            }
+            if i.consume_shortcut(&sc(cs, Key::E)) {
+                toggle_files = true;
             }
             const DIGITS: [Key; 9] = [
                 Key::Num1,
@@ -480,8 +551,12 @@ impl SecureWireApp {
             close_tab = i.consume_shortcut(&sc(cs, Key::W));
             next_tab = i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Tab));
         });
+        if toggle_files && let Some(h) = self.hosts.get_mut(self.active) {
+            h.toggle_files(ui.ctx());
+        }
         if let Some(h) = self.hosts.get_mut(self.active).filter(|h| !h.demo) {
             if new_tab {
+                h.files_active = false;
                 h.new_tab();
             }
             if close_tab {
@@ -494,8 +569,10 @@ impl SecureWireApp {
                 }
             }
         }
-        // F5 belongs to the terminal (htop, mc…) when it has focus.
+        // F5 belongs to the terminal (htop, mc…) when it has focus, and to the Files tab.
+        let files_open = self.hosts.get(self.active).is_some_and(|h| h.files_active);
         if !self.term_focused
+            && !files_open
             && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5))
             && let Some(h) = self.hosts.get(self.active)
         {
@@ -776,7 +853,8 @@ impl SecureWireApp {
                 match sw_ssh::collector::action_line(&a, sudo) {
                     Err(e) => msg = Some(e),
                     Ok(line) if a.destructive() => {
-                        let as_root = !matches!(sudo, SudoMode::None | SudoMode::Unknown);
+                        let as_root =
+                            !matches!(sudo, SudoMode::None | SudoMode::Unknown) && !a.as_user();
                         h.confirm = Some(ConfirmAction::new(a, &h.view.name, line, as_root));
                     }
                     Ok(_) => self.send_action(idx, a),
@@ -835,6 +913,7 @@ impl SecureWireApp {
                 }
             }
             Request::NewTerminal(cmd) => {
+                h.files_active = false;
                 h.new_tab();
                 if let Some(t) = h.tabs.last_mut() {
                     h.handle.send(Command::PtyInput {
@@ -914,6 +993,13 @@ impl SecureWireApp {
                 }
             }
             Pick::NewHost => self.connect.open_new(),
+            Pick::Files => {
+                if let Some(h) = self.hosts.get_mut(idx)
+                    && (h.files.is_none() || !h.files_active)
+                {
+                    h.toggle_files(ctx);
+                }
+            }
             Pick::ChooseServices => self.open_picker(idx),
             Pick::NewTerminal
             | Pick::LogSources
@@ -1188,8 +1274,10 @@ impl eframe::App for SecureWireApp {
             || h.confirm.is_some()
             || h.ports.open
             || self.cmd_palette.open;
+        let files_modal = h.files.as_ref().is_some_and(|f| f.has_modal());
+        let mut files_out = Vec::new();
         CentralPanel::no_frame().frame(bar(BG0)).show(ui, |ui| {
-            if h.demo {
+            if h.demo && !h.files_active {
                 terminal::demo_screen(ui, &h.view.name, &user);
                 return;
             }
@@ -1204,8 +1292,31 @@ impl eframe::App for SecureWireApp {
                 &fallback,
                 banner,
                 pal,
-                !modal_open,
+                !modal_open && !files_modal,
+                h.files.as_ref().map(|_| h.files_active),
             );
+            if h.files_active
+                && let Some(f) = &mut h.files
+            {
+                let connected = h.view.state == ConnState::Connected || h.demo;
+                files_out = f.show(ui, connected, !modal_open);
+            }
+            if out.files_open {
+                h.files = Some(files::FilesTab::new(ui.ctx()));
+                h.files_active = true;
+            }
+            if out.files_select {
+                h.files_active = true;
+            }
+            if out.files_close {
+                if h.files.as_ref().is_some_and(|f| f.running_transfers() > 0) {
+                    // Closing would orphan running transfers: keep them visible instead.
+                    h.files_active = true;
+                } else {
+                    h.files = None;
+                    h.files_active = false;
+                }
+            }
             term_focused = out.focused;
             if let Some((pty, bytes)) = out.input {
                 h.handle.send(Command::PtyInput { pty, bytes });
@@ -1222,6 +1333,7 @@ impl eframe::App for SecureWireApp {
                 h.handle.send(Command::Retry(None));
             }
             if let Some(i) = out.select {
+                h.files_active = false;
                 h.active_tab = i;
                 if let Some(t) = h.tabs.get_mut(i) {
                     t.view.request_focus();
@@ -1231,10 +1343,15 @@ impl eframe::App for SecureWireApp {
                 h.close_tab(i);
             }
             if out.new_tab {
+                h.files_active = false;
                 h.new_tab();
             }
         });
         self.term_focused = term_focused;
+        let id = self.hosts[self.active].handle.id;
+        self.files_out
+            .extend(files_out.into_iter().map(|o| (id, o)));
+        self.run_files_out();
         let reqs = std::mem::take(&mut self.hosts[self.active].ui.requests);
         for r in reqs {
             self.request(r);
@@ -1265,7 +1382,37 @@ impl eframe::App for SecureWireApp {
 }
 
 impl SecureWireApp {
+    /// Carry out what the Files tab asked for (commands, actions, toasts).
+    fn run_files_out(&mut self) {
+        for (id, o) in std::mem::take(&mut self.files_out) {
+            let Some(idx) = self.hosts.iter().position(|h| h.handle.id == id) else {
+                continue;
+            };
+            match o {
+                files::Out::Cmd(c) => self.hosts[idx].handle.send(c),
+                files::Out::Toast(t) => self.toast(t),
+                files::Out::Req(r) => {
+                    if idx == self.active {
+                        self.request(r);
+                    }
+                }
+            }
+        }
+    }
+
     fn finish(&mut self, ui: &Ui) {
+        let busy = self.connect.open
+            || self.cmd_palette.open
+            || self.hosts.get(self.active).is_some_and(|h| {
+                h.key_prompt.is_some()
+                    || h.sudo_prompt.is_some()
+                    || h.auth_prompt.is_some()
+                    || h.confirm.is_some()
+                    || h.files.as_ref().is_some_and(|f| f.has_modal())
+            });
+        if self.updater.show(ui.ctx(), busy) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() < Duration::from_millis(3000) {
                 egui::Area::new("toast".into())

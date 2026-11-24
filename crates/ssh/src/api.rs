@@ -210,6 +210,17 @@ pub enum Command {
         local_port: u16,
     },
     CloseTunnel(u64),
+    /// List a remote directory (empty = home) → [`EventKind::FsListing`] (protocol §15).
+    FsList {
+        id: u64,
+        path: String,
+    },
+    /// Upload or download over SCP on its own channel → [`EventKind::Transfer`] updates.
+    Transfer {
+        id: u64,
+        spec: TransferSpec,
+    },
+    CancelTransfer(u64),
     /// Answer to [`EventKind::SudoPrompt`]: `None` = skip (no privileged features).
     SudoPassword(Option<SecretString>),
     /// Ask for the sudo password again (status bar → "no sudo").
@@ -218,6 +229,50 @@ pub enum Command {
     Retry(Option<AuthSpec>),
     Disconnect,
     Shutdown,
+}
+
+/// One remote file or folder to download.
+#[derive(Debug, Clone)]
+pub struct DownloadItem {
+    /// Absolute remote path.
+    pub remote: String,
+    /// Name to give it in the local folder (the original, or "x (copy)").
+    pub local_name: String,
+    pub is_dir: bool,
+    /// File size from the listing (folders are measured with `du`).
+    pub size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum TransferSpec {
+    /// Local files/folders → into `remote_dir`, each under the given name.
+    Upload {
+        items: Vec<(PathBuf, String)>,
+        remote_dir: String,
+    },
+    Download {
+        items: Vec<DownloadItem>,
+        local_dir: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferState {
+    Running,
+    Done,
+    Failed(String),
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferProgress {
+    pub bytes: u64,
+    pub total: Option<u64>,
+    /// Files completed.
+    pub files: u32,
+    /// File being sent now.
+    pub current: String,
+    pub state: TransferState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +322,14 @@ pub enum EventKind {
     Tunnel {
         id: u64,
         state: TunnelState,
+    },
+    FsListing {
+        id: u64,
+        result: Result<sw_core::files::Listing, String>,
+    },
+    Transfer {
+        id: u64,
+        progress: TransferProgress,
     },
     /// Outcome of [`Command::RunAction`]: combined stdout+stderr (capped).
     ActionResult {

@@ -14,6 +14,10 @@ pub const PROBE: &str = include_str!("../../../collector/probe.sh");
 
 pub const PROBE_COMMAND: &str = "exec sh -s";
 
+/// Directory listing for the file browser (protocol §15), streamed on stdin of
+/// [`sw_core::files::listing_command`].
+pub const LS: &str = include_str!("../../../collector/ls.sh");
+
 /// Verifies a sudo password read from stdin (protocol §9). `-k` ignores cached
 /// credentials so a wrong password can't pass by accident.
 pub const SUDO_VERIFY_COMMAND: &str = "sudo -S -k -p \"\" true";
@@ -212,7 +216,11 @@ pub fn action_line(
     sudo: crate::api::SudoMode,
 ) -> Result<String, String> {
     let cmd = action.command()?;
-    let p = Priv::from_sudo(sudo);
+    let p = if action.as_user() {
+        Priv::None
+    } else {
+        Priv::from_sudo(sudo)
+    };
     if p == Priv::None && !action.works_unprivileged() {
         return Err("This action needs sudo — click \"no sudo\" in the status bar".into());
     }

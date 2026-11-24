@@ -1,4 +1,5 @@
 pub mod dock;
+pub mod files;
 pub mod status;
 pub mod system;
 pub mod terminal;

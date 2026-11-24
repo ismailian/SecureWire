@@ -3,7 +3,7 @@
 A desktop SSH workstation for people who look after their own Linux servers (VPS, small fleets). IDE-style window: an interactive terminal in the middle, surrounded by live panels for resources, network, sessions, services, firewall, security and logs — the things you would otherwise type `free -h`, `df -h`, `who`, `systemctl status`, `journalctl -u`, `ufw status` … for, every single time.
 
 **Stack:** Rust · egui/eframe · russh · tokio · alacritty_terminal
-**Status:** **v1.0.0** — M0–M6 done (2026-11-16). M6 added the logo, version info, bundled JetBrains Mono, CI (Linux, Windows, real sshd + sudo) and release packages: Windows Inno Setup installer + portable zip, Linux .deb / AppImage / tar.gz, macOS .dmg / tar.gz (D-035). The collector CPU budget is now 0.5 % of one core (D-034). M5 brought actions with confirmation, the command palette, `~/.ssh/config` import, ProxyJump, tunnels, the sockets table, the Traffic tab and IP menus; the collector runs under one sudo per session (D-029).
+**Status:** **v1.1.0** — M0–M7 done (2026-11-24). M7 added the Files tab (browse the server, `cp`/`mv`/`rm` there, upload/download over SCP on the same connection; D-036) and the update checker (website feed → verified download → installer; D-037). M0–M6 done 2026-11-16 (v1.0.0). M6 added the logo, version info, bundled JetBrains Mono, CI (Linux, Windows, real sshd + sudo) and release packages: Windows Inno Setup installer + portable zip, Linux .deb / AppImage / tar.gz, macOS .dmg / tar.gz (D-035). The collector CPU budget is now 0.5 % of one core (D-034). M5 brought actions with confirmation, the command palette, `~/.ssh/config` import, ProxyJump, tunnels, the sockets table, the Traffic tab and IP menus; the collector runs under one sudo per session (D-029).
 
 Measurements (release, Windows, window focused): M0 demo host — idle CPU 0.3 % of one core, private memory 36 MB, binary 7.3 MB. M1 live SSH connection + 1 terminal — idle CPU 0.26 %, private memory 66 MB, binary 10.6 MB. M2 live collector at 2 s tiers — idle CPU 0.78 %, private memory 48 MB, monitoring traffic ~330 B/s, binary 10.7 MB. M5 real host (2-vCPU VM): collector 0.28 % of one core in steady state with Live services, 0.47 % with 10 s polling (within the revised 0.5 % budget, D-034; the 2 s fast tier alone is 0.23 %, protocol §14), monitoring traffic ~640 B/s, RTT 1–2 ms. Client (release, M6 pass): idle CPU 0.70 % focused on that host (~1 repaint/s), private memory 50 MB, first window 151 ms, `--bench-ui` p99 1.92 ms, binary 11.5 MB.
 
@@ -72,6 +72,7 @@ crates/
     src/alerts.rs          # threshold rules → Vec<Alert>
     src/shell.rs           # shell_quote(), is_valid_unit(), is_valid_path()
     src/actions.rs         # server actions (protocol §7): fixed templates + validated args → exact command
+    src/files.rs           # file browser (protocol §15): ls.sh listing parser, FsOp templates (cp/mv/mkdir/rm), path rules, SCP records
     src/fuzzy.rs           # palette fuzzy match
     src/format.rs          # bytes / rate / duration formatting rules
     src/parse/probe.rs     # probe.sh key=value output → Probe
@@ -83,6 +84,7 @@ crates/
     src/collector.rs       # embedded collector.sh / probe.sh, launch command, control-line builders
     src/remote.rs          # exec channels: run_probe, verify_sudo, start_collector (reader + 30 ms packet coalescing), log channels (+ access-log parsing), run_exec
     src/tunnel.rs          # one-click tunnels: 127.0.0.1 listener → direct-tcpip on the same connection (protocol §13)
+    src/files.rs           # Files tab channels: listing, SCP upload (scp -t) / download (scp -f) with progress + cancel
     src/actor.rs           # russh HostActor: connect, host-key TOFU, auth, PTY channels, keepalive, reconnect
     src/handle.rs          # HostHandle / CmdTx (same handle for demo and real hosts)
     src/lib.rs             # Net: the net thread + Net::connect()
@@ -99,14 +101,15 @@ crates/
     src/store.rs           # config dir: hosts.toml load/save (atomic), SecureWire known_hosts path
     src/dialogs.rs         # Connect, Host key (TOFU / changed), Auth retry, Sudo, service picker, log sources, Confirm action, action output, Listening sockets
     src/palette.rs         # command palette (Ctrl Shift P): fuzzy items, parameter prompts → Request
+    src/update.rs          # update checker (D-037): site/releases/latest.json → dialog → SHA-256-checked download → installer
     src/widgets.rs         # section, sparkline, bar, badge, dot, switch, icon_button, toggle_chip
-    src/panels/            # topbar, status, system (left), watch (right), dock (bottom), terminal (central)
+    src/panels/            # topbar, status, system (left), watch (right), dock (bottom), terminal + files (central)
   term/  securewire-term (lib sw_term) — Terminal (alacritty_terminal + VT parser behind a FairMutex),
                            # TerminalView egui widget (renderer, keys, mouse, selection, clipboard), input.rs (xterm key encoding)
-collector/             # collector.sh (bash), probe.sh (POSIX sh) — embedded with include_str!; collector ends with `main "$@"`
-packaging/                 # icons/ (securewire.svg + small variant → PNGs + .ico, committed), securewire.desktop, windows/ (Inno Setup .iss + build-installer.ps1), macos/Info.plist
+collector/             # collector.sh (bash), probe.sh + ls.sh (POSIX sh) — embedded with include_str!; collector ends with `main "$@"`
+packaging/                 # latest-json.py (update feed from dist/ + CHANGELOG.md), icons/ (securewire.svg + small variant → PNGs + .ico, committed), securewire.desktop, windows/ (Inno Setup .iss + build-installer.ps1), macos/Info.plist
 LICENSE-MIT, LICENSE-APACHE
-site/                      # website (static HTML/CSS, Cloudflare Pages, output dir `site`): index, docs, 404, _headers; screenshots from `--demo` (site/README.md)
+site/                      # website (static HTML/CSS, Cloudflare Pages, output dir `site`): index, docs, 404, _headers, releases/latest.json (update feed); screenshots from `--demo` (site/README.md)
 design/                    # see §1
 ```
 
@@ -122,11 +125,15 @@ Dependency direction: `app → ssh → core`, `app → term`, `ssh → term` (fe
 | `regex-lite` | 0.1 | log filter |
 | `memchr` | 2 | frame decoder |
 | `russh` | 0.65 | default features off, `ring` + `flate2` + `rsa` — the default `aws-lc-rs` backend needs cmake/NASM on Windows |
-| `tokio` | 1 | `rt`, `net`, `sync`, `time`, `macros`, `io-util` — current-thread runtime only |
+| `tokio` | 1 | `rt`, `net`, `sync`, `time`, `macros`, `io-util`, `fs` (transfers; blocking pool) — current-thread runtime only |
 | `alacritty_terminal` | 0.26 | emulator + `vte` parser |
 | `parking_lot` | **0.12** | must match alacritty_terminal (its `FairMutex` hands out parking_lot 0.12 guards) |
 | `secrecy` | 0.10 | passwords / passphrases in memory |
 | `directories` | 6 | config dir |
+| `ureq` | 3 | update checker only; default features off + `rustls` (ring provider, like russh) |
+| `sha2` | 0.11 | update download hash (same version russh uses) |
+| `rfd` | 0.17 | Files tab Upload/Download pickers, called on a helper thread (0.18 needs Rust 1.92) |
+| `clipboard-win` / `windows-sys` | 5 / 0.61 | Windows only: Explorer file list on the clipboard, V-key state for Ctrl V |
 | `serde` + `toml` | 1 / 1 | hosts.toml |
 
 egui 0.36 API (differs from most examples online): `eframe::App::ui(&mut self, ui: &mut Ui, frame)` instead of `update(ctx, …)`; panels are `egui::Panel::{top,bottom,left,right}(id)` with `.exact_size / .default_size / .size_range` and `.show(ui, …)`; `CentralPanel::no_frame()`; `Margin` fields are `i8`; `rect_stroke` takes a `StrokeKind`; `NativeOptions` has no `vsync` field.
@@ -244,7 +251,16 @@ cargo run -p securewire -- --connect user@host[:port] [--key PATH]   # pre-fille
 cargo run -p securewire-ssh --example dev_sshd # local fake SSH server: 127.0.0.1:2222, tester / securewire-test
 cargo test -p securewire-ssh --test connect   # real actor vs in-process server (no Docker, no VPS)
 SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_host   # check against a real server (add SW_REAL_STEADY=1 for per-section server CPU)
+SW_REAL=user@host [SW_REAL_KEY=…] cargo run -p securewire-ssh --example files_real  # Files tab channels on a real server: listing, SCP up/down (32 MiB), cp/mv/rm, cancel
+cargo run -p securewire -- --demo --files        # open the Files tab at start (also with --connect)
+SW_UPDATE_URL=file:feed.json cargo run -p securewire   # update dialog from a local feed (debug builds check only when this is set; SW_NO_UPDATE_CHECK=1 disables)
 ```
+
+## 8a. Releasing (do every time)
+
+1. Bump `[workspace.package] version` (minor for features, patch for fixes) and add `## X.Y.Z — date` bullets to `CHANGELOG.md` — they become "What's new" in the app's update dialog.
+2. Tag `vX.Y.Z`, push; the Release workflow builds the packages **and `latest.json`** (attached to the draft + `latest-json` artifact).
+3. **Publish the GitHub release, then update the site:** copy that `latest.json` to `site/releases/latest.json`, update the download links/sizes in `site/index.html` + `site/docs.html`, deploy. Never deploy the feed before the release is public (its URLs would 404 for every installed copy). See site/README.md.
 
 ## 9. Testing strategy
 
@@ -277,5 +293,6 @@ SW_REAL=user@host SW_REAL_PASS=… cargo run -p securewire-ssh --example real_ho
 | **M4** ✅ | Logs: discovery dialog, journal + file + sudo-file channels, filters, regex, follow, Alerts tab | Done 2026-11-13: `--bench-ui` p99 1.82 ms at 50 lines/s; SSH e2e test streams journal + file lines and discovers sources; discovery tested in both privilege modes |
 | **M5** ✅ | Multi-host tabs, command palette with parameter prompts, actions with confirmation, Processes/Connections tabs, `~/.ssh/config` import, jump hosts; added on request: tunnels, sockets table, Traffic tab, IP actions | Done 2026-11-16: 11 SSH e2e tests (jump host, actions via sudo, tunnel), real-VM check (`examples/real_host.rs`) + GUI check. **Open:** "daily driver for 3 hosts" needs the user's own use; collector CPU above budget (M6) |
 | **M6** ✅ | Perf pass, packaging, sudoers snippet docs, logo, versioning | Done 2026-11-16 as **v1.0.0**: budgets in §6 verified on a real host (collector 0.28–0.47 % under the revised 0.5 % budget, D-034; client idle 0.70 %, 50 MB, first window 151 ms, frame p99 1.92 ms); CI (Linux, Windows, real sshd + sudo); release workflow with Inno Setup installer, .deb, AppImage, .dmg (D-035); README with sudo notes; logo + exe icon + version (`--version`, top-bar tooltip, welcome screen); JetBrains Mono bundled. **Open:** Inter not embedded (needs the font files); packages not code-signed; ssh-agent auth and tmux untested on a real host |
+| **M7** ✅ | Files tab (requested), update checker (requested), v1.1.0 | Done 2026-11-24: SCP e2e test vs the in-process server + `examples/files_real.rs` on a real VM (32 MiB up 33 MB/s, down 60 MB/s, byte-identical; cancel removes the partial file); update dialog checked with a local feed. **Open:** installer round trip (silent install + relaunch + cleanup) not run on this machine; SFTP-only servers unsupported; drag out of the app unsupported |
 
-Out of scope for v1: editing firewall rules, file manager/SFTP, port forwarding UI, Windows/BSD servers, light theme, user-arranged docking.
+Out of scope for v1: editing firewall rules, SFTP (the Files tab uses SCP), port forwarding UI, Windows/BSD servers, light theme, user-arranged docking.

@@ -7,6 +7,10 @@
   Cross-Origin-Opener-Policy: same-origin
   X-Frame-Options: DENY
 
+/releases/*
+  Cache-Control: public, max-age=300
+  Access-Control-Allow-Origin: *
+
 /assets/*
   Cache-Control: public, max-age=604800
 

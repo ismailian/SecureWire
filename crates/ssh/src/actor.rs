@@ -368,6 +368,7 @@ enum Internal {
         result: Result<remote::Writer, String>,
     },
     Discovered(Result<Vec<sw_core::logs::LogCandidate>, String>),
+    TransferEnded(u64),
     ActionDone {
         id: u64,
         refresh: Option<Section>,
@@ -432,6 +433,8 @@ pub(crate) struct Actor {
     /// Current session for tunnel tasks (protocol §13); tunnels survive reconnects.
     live: crate::tunnel::Live<Client>,
     tunnels: HashMap<u64, crate::tunnel::Tunnel>,
+    /// Running transfers (protocol §15) → their cancel signal. They end with the session.
+    transfers: HashMap<u64, Arc<tokio::sync::Notify>>,
     // ---- M4: log channels (protocol §6) ----
     log_sources: Vec<sw_core::config::LogSourceConfig>,
     log_backlog: u32,
@@ -489,6 +492,7 @@ impl Actor {
             jump_handle: None,
             live: Arc::default(),
             tunnels: HashMap::new(),
+            transfers: HashMap::new(),
             log_sources: Vec::new(),
             log_backlog: 200,
             log_writers: Vec::new(),
@@ -585,6 +589,32 @@ impl Actor {
                     exit: None,
                     output: "Not connected".into(),
                 });
+                None
+            }
+            Command::FsList { id, .. } => {
+                self.emit(EventKind::FsListing {
+                    id,
+                    result: Err("Not connected".into()),
+                });
+                None
+            }
+            Command::Transfer { id, .. } => {
+                self.emit(EventKind::Transfer {
+                    id,
+                    progress: crate::api::TransferProgress {
+                        bytes: 0,
+                        total: None,
+                        files: 0,
+                        current: String::new(),
+                        state: crate::api::TransferState::Failed("Not connected".into()),
+                    },
+                });
+                None
+            }
+            Command::CancelTransfer(id) => {
+                if let Some(n) = self.transfers.remove(&id) {
+                    n.notify_one();
+                }
                 None
             }
             Command::Now(_)
@@ -878,7 +908,8 @@ impl Actor {
             return reply(false, None, "Not connected".into());
         };
         let p = Priv::from_sudo(self.sudo_mode);
-        let secret = if p == Priv::Password {
+        // As-user actions run without sudo, so the password must not reach their stdin.
+        let secret = if p == Priv::Password && !action.as_user() {
             self.sudo_password.clone()
         } else {
             None
@@ -900,6 +931,24 @@ impl Actor {
                 refresh,
                 result: r,
             });
+        });
+    }
+
+    /// Start an SCP transfer task (protocol §15).
+    fn start_transfer(
+        &mut self,
+        handle: &Arc<Handle<Client>>,
+        id: u64,
+        spec: crate::api::TransferSpec,
+    ) {
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        self.transfers.insert(id, cancel.clone());
+        let shared = self.shared.clone();
+        let rep = crate::files::Reporter::new(id, Box::new(move |k| shared.emit(k)));
+        let (h, internal) = (handle.clone(), self.internal_tx.clone());
+        tokio::spawn(async move {
+            crate::files::run(h, spec, cancel, rep).await;
+            let _ = internal.send(Internal::TransferEnded(id));
         });
     }
 
@@ -1048,6 +1097,17 @@ impl Actor {
                         }
                         Command::DiscoverLogs => self.discover_logs(),
                         Command::RunAction { id, action } => self.run_action(id, action),
+                        Command::FsList { id, path } => {
+                            let (h, shared) = (handle.clone(), self.shared.clone());
+                            tokio::spawn(async move {
+                                let result = crate::files::list(&h, &path).await;
+                                shared.emit(EventKind::FsListing { id, result });
+                            });
+                        }
+                        Command::Transfer { id, spec } => self.start_transfer(&handle, id, spec),
+                        c @ Command::CancelTransfer(_) => {
+                            let _ = self.absorb(c);
+                        }
                         c @ (Command::OpenTunnel { .. } | Command::CloseTunnel(_)) => {
                             self.absorb(c);
                         }
@@ -1120,6 +1180,9 @@ impl Actor {
                         }
                     }
                     Some(Internal::Discovered(Ok(c))) => self.emit(EventKind::LogCandidates(c)),
+                    Some(Internal::TransferEnded(id)) => {
+                        self.transfers.remove(&id);
+                    }
                     Some(Internal::ActionDone { id, refresh, result }) => {
                         let (ok, exit, output) = match result {
                             Ok((out, status)) => (status == Some(0), status, out),
@@ -1593,6 +1656,10 @@ impl Actor {
 
     /// Connection gone: drop channel writers; stale reader messages are ignored by generation.
     fn end_session(&mut self) {
+        // Transfers hold the session's handle; stop them so the connection really closes.
+        for (_, n) in self.transfers.drain() {
+            n.notify_one();
+        }
         for p in self.ptys.values_mut() {
             p.writer = None;
         }

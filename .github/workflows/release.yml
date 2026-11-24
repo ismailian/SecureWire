@@ -114,9 +114,25 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - uses: actions/checkout@v4
+        with:
+          path: src
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS
+      # The update feed for the website (site/releases/latest.json). Attached to the draft and
+      # kept as an artifact; copy it into site/releases/ AFTER publishing the release (D-037).
+      - name: Update feed
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          cd src && python3 packaging/latest-json.py "$v" ../dist > ../latest.json
+          cat ../latest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latest-json
+          path: latest.json
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: dist/*
+          files: |
+            dist/*
+            latest.json

@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "date": "2026-11-16",
+  "notes": [
+    "First release: terminal, live system, services, firewall, security and log panels over one SSH connection.",
+    "Command palette, server actions with confirmation, tunnels, ~/.ssh/config import and jump hosts."
+  ],
+  "page": "https://github.com/ismailian/SecureWire/releases/tag/v1.0.0",
+  "assets": {
+    "windows-x86_64": {
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-windows-x86_64-setup.exe",
+      "sha256": "56901ee2c10698a2f8a49dee38fb2598eb63ba9d6c7b68fab41c556f1cbfbf30",
+      "size": 6214216
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-linux-x86_64.AppImage",
+      "sha256": "5389b90a7e218786d6ec1151a3eef5119d32864e9d130b5c1fb7e24c92419220",
+      "size": 7854584
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.0.0/securewire-v1.0.0-macos-aarch64.dmg",
+      "sha256": "134382f8b033e52b74d127eaef7bca2cef12d53b4de08a4ed77eb2f239f80952",
+      "size": 6007183
+    }
+  }
+}

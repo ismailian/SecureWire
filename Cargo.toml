@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/core", "crates/term", "crates/ssh", "crates/app"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
@@ -23,7 +23,7 @@ thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"   # must match alacritty_terminal (its FairMutex guards are parking_lot 0.12)
 russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time", "macros", "io-util", "fs"] }
 alacritty_terminal = "0.26"
 secrecy = "0.10"
 directories = "6"

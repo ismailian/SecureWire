@@ -11,7 +11,7 @@ use crate::theme::tok::*;
 use crate::widgets as w;
 
 /// Shared look: dimmed backdrop + centered window.
-fn modal<R>(
+pub(crate) fn modal<R>(
     ctx: &egui::Context,
     id: &str,
     title: &str,

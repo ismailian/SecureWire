@@ -8,6 +8,7 @@
 pub mod actions;
 pub mod alerts;
 pub mod config;
+pub mod files;
 pub mod format;
 pub mod frame;
 pub mod fuzzy;

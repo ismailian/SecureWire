@@ -852,3 +852,159 @@ fn tunnel_forwards_a_local_port_over_the_same_connection() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(std::net::TcpListener::bind(("127.0.0.1", local_port)).is_ok());
 }
+
+/// Files tab (protocol §15): listing, SCP upload + download of a tree, and a server-side
+/// copy and delete, all as channels on the one connection (the "server" runs local bash/scp).
+#[test]
+fn files_list_scp_upload_download_and_ops() {
+    use support::fakehost::{FakeHost, posix};
+    use sw_core::actions::Action;
+    use sw_core::files::{FsOp, Pair};
+    use sw_ssh::api::{DownloadItem, TransferSpec, TransferState};
+    let Some(host) = FakeHost::new("files") else {
+        eprintln!("SKIP: no bash found (set SW_TEST_BASH)");
+        return;
+    };
+    let srv = support::start_with_exec(support::ExecEnv {
+        bash: host.bash().into(),
+        env: host.env(),
+    });
+    let f = connect(srv.port, password(), TempDir::new("files"));
+    wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::Connected(_))
+    });
+
+    let remote = TempDir::new("files-remote");
+    let local = TempDir::new("files-local");
+    let rdir = posix(&remote.0);
+    // Local tree to upload: a file of odd size and a folder with a file in it.
+    let big: Vec<u8> = (0..200_003u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(local.0.join("a b.bin"), &big).unwrap();
+    std::fs::create_dir(local.0.join("sub")).unwrap();
+    std::fs::write(local.0.join("sub").join("inner.txt"), b"hello\n").unwrap();
+
+    let done = |id: u64| {
+        let ev = wait_for(
+            &f,
+            KeyDecision::Once,
+            |e| matches!(e, EventKind::Transfer { id: i, progress } if *i == id && progress.state != TransferState::Running),
+        );
+        let EventKind::Transfer { progress, .. } = ev else {
+            unreachable!()
+        };
+        assert_eq!(progress.state, TransferState::Done, "{progress:?}");
+        progress
+    };
+
+    f.host.send(Command::Transfer {
+        id: 1,
+        spec: TransferSpec::Upload {
+            items: vec![
+                (local.0.join("a b.bin"), "a b.bin".into()),
+                (local.0.join("sub"), "sub (copy)".into()),
+            ],
+            remote_dir: rdir.clone(),
+        },
+    });
+    let p = done(1);
+    assert_eq!((p.files, p.bytes, p.total), (2, 200_009, Some(200_009)));
+    assert_eq!(std::fs::read(remote.0.join("a b.bin")).unwrap(), big);
+    assert_eq!(
+        std::fs::read(remote.0.join("sub (copy)").join("inner.txt")).unwrap(),
+        b"hello\n"
+    );
+
+    // Listing sees both, with types and sizes.
+    f.host.send(Command::FsList {
+        id: 2,
+        path: rdir.clone(),
+    });
+    let EventKind::FsListing { result, .. } = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::FsListing { id: 2, .. })
+    }) else {
+        unreachable!()
+    };
+    let l = result.unwrap();
+    let e = l.entries.iter().find(|e| e.name == "a b.bin").unwrap();
+    assert!(!e.is_dir && e.size == 200_003);
+    assert!(l.entries.iter().any(|e| e.name == "sub (copy)" && e.is_dir));
+
+    // Download the folder under another name, and the file.
+    let down = TempDir::new("files-down");
+    f.host.send(Command::Transfer {
+        id: 3,
+        spec: TransferSpec::Download {
+            items: vec![
+                DownloadItem {
+                    remote: format!("{rdir}/sub (copy)"),
+                    local_name: "got".into(),
+                    is_dir: true,
+                    size: 0,
+                },
+                DownloadItem {
+                    remote: format!("{rdir}/a b.bin"),
+                    local_name: "a b.bin".into(),
+                    is_dir: false,
+                    size: 200_003,
+                },
+            ],
+            local_dir: down.0.clone(),
+        },
+    });
+    let p = done(3);
+    assert_eq!(p.files, 2);
+    assert_eq!(std::fs::read(down.0.join("a b.bin")).unwrap(), big);
+    assert_eq!(
+        std::fs::read(down.0.join("got").join("inner.txt")).unwrap(),
+        b"hello\n"
+    );
+
+    // Server-side copy then delete (plain cp / rm as the login user).
+    f.host.send(Command::RunAction {
+        id: 4,
+        action: Action::Files(FsOp::Copy(vec![Pair {
+            src: format!("{rdir}/a b.bin"),
+            dst: format!("{rdir}/c.bin"),
+            replace: false,
+        }])),
+    });
+    let ok = |id: u64| {
+        let ev = wait_for(
+            &f,
+            KeyDecision::Once,
+            |e| matches!(e, EventKind::ActionResult { id: i, .. } if *i == id),
+        );
+        let EventKind::ActionResult { ok, output, .. } = ev else {
+            unreachable!()
+        };
+        assert!(ok, "{output}");
+    };
+    ok(4);
+    assert_eq!(std::fs::read(remote.0.join("c.bin")).unwrap(), big);
+    f.host.send(Command::RunAction {
+        id: 5,
+        action: Action::Files(FsOp::Delete(vec![
+            format!("{rdir}/c.bin"),
+            format!("{rdir}/sub (copy)"),
+        ])),
+    });
+    ok(5);
+    assert!(!remote.0.join("c.bin").exists() && !remote.0.join("sub (copy)").exists());
+
+    // A missing folder is an error, not a crash; a missing file fails the download cleanly.
+    f.host.send(Command::FsList {
+        id: 6,
+        path: format!("{rdir}/nope"),
+    });
+    let EventKind::FsListing { result, .. } = wait_for(&f, KeyDecision::Once, |e| {
+        matches!(e, EventKind::FsListing { id: 6, .. })
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(result.unwrap_err(), "No such directory");
+    assert_eq!(
+        srv.observed.lock().unwrap().sessions,
+        1,
+        "no second TCP connection"
+    );
+}

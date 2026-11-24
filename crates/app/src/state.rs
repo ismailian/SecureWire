@@ -218,7 +218,9 @@ impl HostView {
         let now = Instant::now();
         match ev {
             // Handled by the app (it owns the dialogs and toasts).
-            EventKind::ActionResult { .. } => {}
+            EventKind::ActionResult { .. }
+            | EventKind::FsListing { .. }
+            | EventKind::Transfer { .. } => {}
             EventKind::Access(hits) => self.traffic.add(hits),
             EventKind::Tunnel { id, state } => {
                 if let Some(t) = self.tunnels.iter_mut().find(|t| t.id == id) {

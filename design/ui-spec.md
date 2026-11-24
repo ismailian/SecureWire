@@ -84,6 +84,23 @@ Header: title, age of last fast sample, pause sampling, collapse all.
 - Shell exit (`exit`, Ctrl D): the tab closes; with no tabs left the area shows "No terminal open · Ctrl Shift T opens one · [New terminal]" (D-032). A lost connection keeps the tabs.
 - Disconnect: dim the grid, show an inline banner "Connection lost — reconnecting in 4 s · [Reconnect now]". Scrollback is preserved; a new shell starts after reconnect (we do not pretend the old shell survived).
 
+### 3.7 Center — FILES tab
+- Opened with the folders button right of `+` in the tab strip, `Ctrl Shift E` (toggles between Files and the terminal), the palette, or `--files` on the command line. One Files tab per host, drawn first in the strip; closing it while transfers run keeps it open.
+- One pane: the **server's** file system, starting in the login user's home. There is no local pane — this computer is reached through native dialogs and drag and drop (user request, D-036).
+- One bar (40 px), icons only (16 px, 30 px hit area, BG3 on hover, tooltips name them), groups split by short LINE2 dividers: **Back · Up · Refresh** | **path field** (flex) | **Upload files** (accent icon) · Upload folders · Download · | New folder · Delete | Show hidden (accent when on). Upload/Download open native pickers on a helper thread, starting in the last local folder used (Downloads at first).
+- Path field: BG0, 1 px LINE border (ACC_MID while typing), radius 4, 28 px high. Breadcrumbs at 13 px with 8 px either side of a caret separator; ancestors TX2 (BG3 on hover, full path as tooltip), the current folder TX0. When too long, the root stays and "…" replaces the middle. Click empty space in the field or the pencil at its right end to type a path (Enter goes, Esc cancels).
+- Columns: icon, NAME (flex, clipped), SIZE (binary units, right-aligned), MODIFIED (UTC, `YYYY-MM-DD HH:MM`), and when wider than 640 px PERMISSIONS (`rwxr-xr-x`) and OWNER. Click a header to sort, again to reverse (Phosphor caret); folders always first. Rows 24 px via `show_rows`; hover BG2, selected ACC_DIM.
+- Selection: click, Ctrl click, Shift click, Ctrl A, arrows; click on empty space clears it. Double-click a folder to open it, a file to download it (folder picker).
+- Right-click a row: Open, Download…, Upload files into this folder… (folders), Copy, Cut, Paste, Rename…, Copy path, Open a terminal here (folders), Delete…. Right-click empty space: Upload files…, Upload folders…, New folder…, Paste, Open a terminal here.
+- Clipboard: `Ctrl C` / `Ctrl X` put the selection on the browser's clipboard (and the paths on the system clipboard as text); `Ctrl V` pastes into the open folder with `cp` / `mv` on the server. Files copied in Explorer and pasted with `Ctrl V` are uploaded.
+- Drag and drop: files or folders dropped from the desktop upload into the open folder, or into the folder row under the pointer (that row lights up ACC_MID). While dragging, an accent outline and a chip "Drop to upload to <path> (SCP)" show the target.
+- Name clash dialog: Replace (red; overwrites files, merges folders) · Keep both (accent, default) · Cancel. Destructive server operations go through the Confirm dialog with the exact command.
+- Status line (22 px): item count, selection count and size; on the right the clipboard state or a hint about dropping and pasting.
+- Transfers strip (bottom, while there are transfers; ≤ 4 rows of 40 px): direction icon, label → destination, bytes / total · rate · current file, 160 px progress bar, cancel ✕; finished rows show ✓ / ⚠ / ✕ with a summary; "Clear finished".
+
+### 3.8 Update dialog
+On start the app fetches `releases/latest.json` from the website (D-037). A newer version opens a modal: "SecureWire x.y.z", date, "You have version a.b.c", a "What's new" list, size and how it installs, then **Download** (accent) · Close. Downloading: 6 px progress bar, `x / y MB · n %`, Cancel. Verified: "Download verified" + **Install and restart** (or Open installer) · Later. Errors in red with Retry · Release page · Close.
+
 ### 3.4 Bottom dock — LOGS · ALERTS · PROCESSES · CONNECTIONS · TRAFFIC
 Tab headers are uppercase labels with count badges (Logs: error count since last viewed; Alerts: active alerts).
 
@@ -159,6 +176,8 @@ All dialogs: title bar with icon + title + host name, × close, body, footer wit
 | `Ctrl Shift P` | Command palette |
 | `Ctrl Shift B` / `Ctrl Shift R` / `Ctrl Shift J` | Toggle left / right / bottom panel |
 | `Ctrl Shift T` / `Ctrl Shift W` | New / close terminal tab |
+| `Ctrl Shift E` | Files tab (open, or switch between it and the terminal) |
+| In the Files tab | `Ctrl C` / `Ctrl X` / `Ctrl V` copy / cut / paste files, `Del` delete, `F2` rename, `F5` refresh the pane, `Backspace` up, `Enter` open, `Ctrl A` select all, arrows move |
 | `Ctrl Tab` / `Ctrl Shift Tab` | Next / previous terminal tab |
 | `Ctrl 1…9` | Switch host tab |
 | `Ctrl Shift L` | Focus logs filter |

@@ -785,6 +785,22 @@ $ {line}
                     "Demo host: there is no server to tunnel to".into(),
                 ),
             }]),
+            Command::FsList { id, path } => self.send([EventKind::FsListing {
+                id,
+                result: Ok(demo_listing(&path)),
+            }]),
+            Command::Transfer { id, .. } => self.send([EventKind::Transfer {
+                id,
+                progress: crate::api::TransferProgress {
+                    bytes: 0,
+                    total: None,
+                    files: 0,
+                    current: String::new(),
+                    state: crate::api::TransferState::Failed(
+                        "Demo host: there is no server to transfer to".into(),
+                    ),
+                },
+            }]),
             // Terminal, host-key and connection commands have no meaning for the demo host.
             _ => {}
         }
@@ -848,6 +864,67 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// A small fixed tree for the file browser on the demo host (screenshots, UI work).
+fn demo_listing(path: &str) -> sw_core::files::Listing {
+    use sw_core::files::{Kind, Listing, RemoteEntry};
+    let path = if path.is_empty() { "/root" } else { path };
+    let rows: &[(&str, bool, u64, &str)] = match path {
+        "/" => &[
+            ("etc", true, 4096, "root"),
+            ("home", true, 4096, "root"),
+            ("root", true, 4096, "root"),
+            ("srv", true, 4096, "root"),
+            ("var", true, 4096, "root"),
+        ],
+        "/var" => &[("log", true, 4096, "root"), ("www", true, 4096, "root")],
+        "/var/www" => &[
+            ("html", true, 4096, "www-data"),
+            ("shop", true, 4096, "www-data"),
+        ],
+        "/var/www/shop" | "/var/www/html" => &[
+            ("assets", true, 4096, "www-data"),
+            ("index.php", false, 1_284, "www-data"),
+            ("config.php", false, 3_902, "www-data"),
+            (".htaccess", false, 412, "www-data"),
+            ("composer.json", false, 1_066, "www-data"),
+        ],
+        "/var/log" => &[
+            ("nginx", true, 4096, "root"),
+            ("auth.log", false, 1_839_204, "syslog"),
+            ("syslog", false, 6_120_448, "syslog"),
+            ("redis", true, 4096, "redis"),
+        ],
+        _ => &[
+            (".ssh", true, 4096, "root"),
+            ("backups", true, 4096, "root"),
+            ("deploy.sh", false, 2_417, "root"),
+            (".bashrc", false, 3_106, "root"),
+            ("db-2026-11-15.sql.gz", false, 48_211_968, "root"),
+            ("notes.md", false, 905, "root"),
+        ],
+    };
+    Listing {
+        path: path.to_owned(),
+        entries: rows
+            .iter()
+            .enumerate()
+            .map(|(i, (name, dir, size, owner))| RemoteEntry {
+                name: (*name).into(),
+                display: (*name).into(),
+                kind: if *dir { Kind::Dir } else { Kind::File },
+                is_dir: *dir,
+                size: *size,
+                mtime: 1_794_830_000 - i as i64 * 86_400,
+                mode: if *dir { 0o755 } else { 0o644 },
+                owner: (*owner).into(),
+                group: (*owner).into(),
+                target: String::new(),
+            })
+            .collect(),
+        skipped: 0,
+    }
 }
 
 #[cfg(test)]

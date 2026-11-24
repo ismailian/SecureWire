@@ -23,7 +23,7 @@ jobs:
       - name: shellcheck (the scripts that run on servers)
         run: |
           shellcheck -s bash collector/collector.sh collector/discover.sh
-          shellcheck -s sh collector/probe.sh
+          shellcheck -s sh collector/probe.sh collector/ls.sh
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Real bash and a real /proc next to the fake host fixtures.

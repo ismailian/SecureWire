@@ -25,10 +25,12 @@ Rust · egui · russh · alacritty_terminal. Windows, Linux and macOS clients; L
 - **Actions with confirmation**: restart / stop / reload services, kill processes, ban and unban IPs. The dialog shows the exact command first.
 - **One-click tunnels**: right-click a service or a port to reach it from your computer (MySQL, Redis, a web dashboard). It listens on `127.0.0.1` only and uses the same SSH connection.
 - **Command palette** (`Ctrl Shift P`), `~/.ssh/config` import, jump hosts (ProxyJump).
+- **Files** (`Ctrl Shift E`): browse the server; copy, cut, paste, rename, delete and create folders there (plain `cp`/`mv`/`rm` as your login user). Upload by picking files, dropping them on the window or pasting files copied in Explorer; download the selection to a folder you pick. Transfers use SCP on the same SSH connection (the server needs the `scp` binary, which OpenSSH provides).
+- **Updates**: on start SecureWire checks the website for a newer version. Download verifies the SHA-256 before the installer runs; set `SW_NO_UPDATE_CHECK=1` to turn the check off.
 
 ## What it does on your server
 
-**Nothing is installed or written there.** On connect, a short probe and a small bash script are streamed over SSH and run from memory (`bash -s`). The script sends back plain text that the app parses. Everything runs over **one SSH connection per host**: terminal tabs, metrics, log tails, actions and tunnels are channels on it.
+**Nothing is installed or written there.** On connect, a short probe and a small bash script are streamed over SSH and run from memory (`bash -s`). The script sends back plain text that the app parses. Everything runs over **one SSH connection per host**: terminal tabs, metrics, log tails, actions, file transfers and tunnels are channels on it.
 
 Collection follows what you can see. Closed sections stop collecting, and an unfocused or minimized window slows collection down. On a small 2-vCPU VM the script costs about 0.3 % of one core with the default panels open, and monitoring traffic is under 1 KB/s.
 

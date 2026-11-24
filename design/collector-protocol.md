@@ -306,3 +306,17 @@ Per-emission server CPU, then steady state per group, on a 2-vCPU VirtualBox VM 
 - `svc` asks for `LoadState`: a watched unit that doesn't exist shows "unit not found" instead of "dead"; an alias (`sshd.service` → `ssh.service`) is shown once.
 - Before M5 the collector called `sudo` per privileged section per tick: on a real host each call wrote 3 auth-log lines (command + PAM open/close). D-029 removed that.
 - Result, steady state with the default visible sections (120 s windows): **0.28 % of one core** with services in Live mode, **0.47 %** in Poll-every-10 s mode — down from ~1.4 % before M5. The original < 0.1 % target was not reachable at a 2 s fast tier on this VM (the fast tier alone is ~0.23 %), so §8 now says < 0.5 % (D-034). Release binary 11.5 MB.
+
+## 15. File browser (Files tab, v1.1)
+
+Everything runs as the **login user** (never sudo) on channels of the host's one connection. Nothing is installed on the server.
+
+**Listing** — one exec channel per folder opened: `LC_ALL=C exec sh -s -- '<dir>'` (no argument = home) with `collector/ls.sh` on stdin. Output is NUL-separated: `P\0<resolved path>\0`, then 8 fields per entry — `%y%Y` (type, and target type for symlinks), size, mtime, octal mode, user, group, name, link target — or `E\0<noent|notdir|perm>\0`. GNU `find -printf` does it in one process; BusyBox/BSD fall back to one `stat` per entry. Names that are not UTF-8 are skipped (they can't be named back safely); names are drawn with control characters stripped. Output is capped at 32 MiB, 30 s.
+
+**Operations on the server** — copy, move, rename, new folder, delete are server actions (§7, `Action::Files`) built from fixed templates in `core::files` (`cp -a --`, `mv [-n] --`, `mkdir --`, `rm -rf --`). Every path must be absolute with plain components (no `.`/`..`/empty, no NUL/newline) and is single-quoted. Delete, move, rename and anything that replaces an existing name show the exact command and ask first (non-negotiable 7); copies into free names and new folders run directly. Pasting into the same folder makes `name (copy).ext`. A move or copy into itself is refused.
+
+**Transfers (SCP)** — Upload / Download (native pickers), a drop from the desktop, or files copied in Explorer and pasted:
+- Upload: one exec channel `scp -r -t -- '<remote dir>'`. The client walks the local items first (tokio blocking pool) for the total, then sends `D<mode> 0 <name>` / `C<mode> <size> <name>` / data / `\0` / `E`, waiting for the sink's `\0` after each record. A clash the user chose to keep gets a "(copy)" name in the `C`/`D` record.
+- Download: one exec channel per item, `scp -r -f -- '<path>'`. Records from the server are parsed by `core::files::parse_scp_record`, which refuses names with `/`, `.` or `..` (a hostile server can't write outside the chosen folder). The top-level record is renamed to the name the user chose. Folder totals come from one `du -sk` first. A partly written file is deleted on failure or cancel.
+- `\1`/`\2` replies are warnings/errors from the server's scp; warnings inside a folder skip that file and are reported at the end. Exit 127 → "scp is not installed on the server".
+- Progress events at most every 150 ms per transfer; cancel closes the channel. Transfers end with the session (no resume after a reconnect).
