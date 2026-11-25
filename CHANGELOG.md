@@ -3,6 +3,10 @@
 Each release's bullet lines become the "What's new" list in the app's update dialog
 (`packaging/latest-json.py` → `site/releases/latest.json`). Keep them short.
 
+## 1.1.1 — 2026-11-25
+
+- Cleaner top bar: the command palette sits in the middle; the logo, the name and the Settings cog that did nothing are gone.
+
 ## 1.1.0 — 2026-11-24
 
 - Files tab (Ctrl Shift E): browse the server; copy, cut, paste, rename, create and delete files and folders there.

@@ -1,6 +1,6 @@
 //! Top bar (ui-spec §3.1).
 
-use egui::{Align, Align2, Layout, RichText, Sense, Ui, pos2, vec2};
+use egui::{Align, Align2, Layout, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as ph;
 use sw_ssh::api::ConnState;
 
@@ -31,15 +31,10 @@ pub struct TopAction {
 
 pub fn show(ui: &mut Ui, hosts: &[HostTab<'_>], active: usize, layout: &mut Layout3) -> TopAction {
     let mut act = TopAction::default();
+    let bar = ui.max_rect();
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        // Brand
-        let version = format!("SecureWire {}", theme::VERSION);
-        theme::logo(ui, 20.0).on_hover_text(&version);
-        ui.add_space(7.0);
-        ui.label(RichText::new("SecureWire").color(TX0).strong())
-            .on_hover_text(version);
-        ui.add_space(16.0);
+        ui.add_space(8.0);
 
         for (i, h) in hosts.iter().enumerate() {
             let on = i == active;
@@ -105,8 +100,6 @@ pub fn show(ui: &mut Ui, hosts: &[HostTab<'_>], active: usize, layout: &mut Layo
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let _ = w::icon_button(ui, ph::GEAR_SIX, "Settings (M5)", false);
-            ui.add_space(6.0);
             if w::icon_button(
                 ui,
                 ph::SIDEBAR_SIMPLE,
@@ -137,9 +130,18 @@ pub fn show(ui: &mut Ui, hosts: &[HostTab<'_>], active: usize, layout: &mut Layo
             {
                 layout.left = !layout.left;
             }
-            ui.add_space(12.0);
-            let width = (ui.available_width() - 40.0).clamp(160.0, 420.0);
-            let (r, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+            // Centered on the whole bar, but kept clear of the host tabs and the toggles.
+            let free = ui.available_rect_before_wrap().shrink2(vec2(12.0, 0.0));
+            let width = free.width().min(420.0);
+            if width < 120.0 {
+                return;
+            }
+            let left = (bar.center().x - width / 2.0).clamp(free.left(), free.right() - width);
+            let r = egui::Rect::from_center_size(
+                pos2(left + width / 2.0, free.center().y),
+                vec2(width, 24.0),
+            );
+            let resp = ui.interact(r, ui.id().with("palette-box"), Sense::click());
             let p = ui.painter();
             p.rect_filled(r, 3, BG1);
             p.rect_stroke(

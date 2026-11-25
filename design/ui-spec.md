@@ -57,12 +57,10 @@ Panel visibility, sizes, collapsed sections, active bottom tab and log filters p
 ### 3.1 Top bar
 | Element | Behaviour |
 |---|---|
-| Brand | Logo (small variant, 20 px) + "SecureWire". Hover shows the version. Not otherwise interactive. |
 | Host tabs | One per open host. Status dot = worst current state (green ok · amber warning · red error · gray disconnected). Hover shows `user@host:port` and the reason for the color. Middle-click / × closes (asks if terminals are running). Drag to reorder. |
 | `+` | Opens **Connect** dialog. |
-| Command palette | `Ctrl Shift P`. Fuzzy over: actions (restart service, tail file, largest dirs, who's on port, ban IP, new terminal), hosts, services, log sources. Actions that need input open a small parameter prompt in the palette itself. |
+| Command palette | Centered in the bar (shifts aside rather than overlap the host tabs). `Ctrl Shift P`. Fuzzy over: actions (restart service, tail file, largest dirs, who's on port, ban IP, new terminal), hosts, services, log sources. Actions that need input open a small parameter prompt in the palette itself. |
 | Layout toggles | Left (`Ctrl Shift B`), bottom (`Ctrl Shift J`), right (`Ctrl Shift R`). Teal when visible. |
-| Settings | Opens settings window (theme, fonts, tier intervals, thresholds, keybindings). |
 
 ### 3.2 Left panel — SYSTEM
 Header: title, age of last fast sample, pause sampling, collapse all.
@@ -156,7 +154,7 @@ All dialogs: title bar with icon + title + host name, × close, body, footer wit
 6. **Confirm action** — exact command in a mono block, target host name in the title, primary button labelled with the verb ("Restart nginx"), destructive ones in error color.
    Read-only actions (largest directories, who's on port) skip the confirmation; their output opens in an **output window** (exit status, copy, close). A destructive action with no output just shows a toast.
 8. **Listening sockets** — filterable table: proto, address, port, process (pid on hover), exposure (`public` / `local only`), firewall (`open` / `allowed` / `blocked` / `no firewall`), and per row **Tunnel** (TCP only) and **Who**. Footer: "Tunnels listen on 127.0.0.1 only and ride this host's SSH connection."
-7. **Settings** — tabs: General (theme, UI scale, fonts), Collection (tier intervals, focus throttling on/off), Alerts (thresholds), Terminal (scrollback, font size, cursor style, copy-on-select), Keys.
+7. **Settings** — *not built; the top-bar cog was removed until it exists.* Planned tabs: General (theme, UI scale, fonts), Collection (tier intervals, focus throttling on/off), Alerts (thresholds), Terminal (scrollback, font size, cursor style, copy-on-select), Keys.
 
 ## 5. States
 

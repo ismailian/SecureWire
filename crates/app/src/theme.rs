@@ -140,33 +140,29 @@ pub fn install(ctx: &egui::Context) {
 /// Window / taskbar icon (Linux and Windows; macOS uses the bundle's icon).
 pub const ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-256.png");
 const LOGO_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-128.png");
-const LOGO_SMALL_PNG: &[u8] = include_bytes!("../../../packaging/icons/securewire-small-64.png");
 
-fn logo_id(small: bool) -> egui::Id {
-    egui::Id::new(("securewire-logo", small))
+fn logo_id() -> egui::Id {
+    egui::Id::new("securewire-logo")
 }
 
-/// Decodes the two logo PNGs once at startup into textures kept in egui memory.
+/// Decodes the logo PNG once at startup into a texture kept in egui memory.
 fn load_logos(ctx: &egui::Context) {
-    for (small, png) in [(false, LOGO_PNG), (true, LOGO_SMALL_PNG)] {
-        let Ok(icon) = eframe::icon_data::from_png_bytes(png) else {
-            continue;
-        };
-        let size = [icon.width as usize, icon.height as usize];
-        let img = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
-        let opts = egui::TextureOptions {
-            mipmap_mode: Some(egui::TextureFilter::Linear),
-            ..egui::TextureOptions::LINEAR
-        };
-        let tex = ctx.load_texture(if small { "logo-small" } else { "logo" }, img, opts);
-        ctx.data_mut(|d| d.insert_temp(logo_id(small), tex));
-    }
+    let Ok(icon) = eframe::icon_data::from_png_bytes(LOGO_PNG) else {
+        return;
+    };
+    let size = [icon.width as usize, icon.height as usize];
+    let img = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
+    let opts = egui::TextureOptions {
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+        ..egui::TextureOptions::LINEAR
+    };
+    let tex = ctx.load_texture("logo", img, opts);
+    ctx.data_mut(|d| d.insert_temp(logo_id(), tex));
 }
 
-/// The SecureWire logo at `size` points; the small variant (no wire) reads better under 32 px.
+/// The SecureWire logo at `size` points (welcome screen).
 pub fn logo(ui: &mut egui::Ui, size: f32) -> egui::Response {
-    let small = size < 32.0;
-    let tex: Option<egui::TextureHandle> = ui.ctx().data(|d| d.get_temp(logo_id(small)));
+    let tex: Option<egui::TextureHandle> = ui.ctx().data(|d| d.get_temp(logo_id()));
     let size = egui::vec2(size, size);
     match tex {
         Some(t) => ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(

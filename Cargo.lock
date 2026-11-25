@@ -3694,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "securewire"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "clipboard-win",
  "directories",
@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "securewire-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "memchr",
  "serde",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "securewire-ssh"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "parking_lot",
  "rand",
@@ -3741,7 +3741,7 @@ dependencies = [
 
 [[package]]
 name = "securewire-term"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "alacritty_terminal",
  "egui",
