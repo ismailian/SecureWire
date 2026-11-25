@@ -1,27 +1,25 @@
 {
-  "version": "1.1.0",
-  "date": "2026-11-24",
+  "version": "1.1.1",
+  "date": "2026-11-25",
   "notes": [
-    "Files tab (Ctrl Shift E): browse the server; copy, cut, paste, rename, create and delete files and folders there.",
-    "Upload and download over SCP on the same SSH connection: pick files or a folder, drag files in from the desktop, or paste files copied in Explorer.",
-    "Update checker: SecureWire tells you when a new version is out, downloads it, checks its SHA-256 and installs it."
+    "Cleaner top bar: the command palette sits in the middle; the logo, the name and the Settings cog that did nothing are gone."
   ],
-  "page": "https://github.com/ismailian/SecureWire/releases/tag/v1.1.0",
+  "page": "https://github.com/ismailian/SecureWire/releases/tag/v1.1.1",
   "assets": {
     "windows-x86_64": {
-      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-windows-x86_64-setup.exe",
-      "sha256": "9d4d04ef683d4d2ba5ea03631e6f66efbf27ebe88960f60f477f7b6616795675",
-      "size": 6947195
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.1/securewire-v1.1.1-windows-x86_64-setup.exe",
+      "sha256": "983e4e0ed20c9452662128a195631f218d56ceb8ee83112ffe25bb55caddf49f",
+      "size": 6945824
     },
     "linux-x86_64": {
-      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-linux-x86_64.AppImage",
-      "sha256": "85a2c0fc2ff9bc523a32a951643b9675b2c009059829f9357c90c530327401c7",
-      "size": 8874488
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.1/securewire-v1.1.1-linux-x86_64.AppImage",
+      "sha256": "281beb44050f3b5e91258fea1b64e669ec11c0b57b031e175a9783845317dc7e",
+      "size": 8870392
     },
     "macos-aarch64": {
-      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.0/securewire-v1.1.0-macos-aarch64.dmg",
-      "sha256": "2ecc8175be4fef3be45ef0ddfa0456593eec60b8175ef4232f45e5c189e4ffb7",
-      "size": 6978751
+      "url": "https://github.com/ismailian/SecureWire/releases/download/v1.1.1/securewire-v1.1.1-macos-aarch64.dmg",
+      "sha256": "78422b4c6b0344cade9bb38f52f434a0cd8408c6319c974da3bc0f8fb418b047",
+      "size": 6978875
     }
   }
 }
